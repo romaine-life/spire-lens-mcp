@@ -4,6 +4,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Godot;
+using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Models;
@@ -12,6 +13,17 @@ namespace SpireLens.Mcp;
 
 public static partial class McpMod
 {
+    // Replaces upstream's CombatManager.IsPlayPhase, which was removed in
+    // game v0.104.0. The original meant "the player can act right now":
+    // we're in combat (caller already checks IsInProgress), it's not the
+    // enemy's turn, neither end-turn phase is in flight, and the game
+    // isn't paused.
+    private static bool IsInPlayPhase(this CombatManager cm) =>
+        !cm.IsEnemyTurnStarted
+        && !cm.EndingPlayerTurnPhaseOne
+        && !cm.EndingPlayerTurnPhaseTwo
+        && !cm.IsPaused;
+
     private static string? SafeGetCardDescription(CardModel card, PileType pile = PileType.Hand)
     {
         try { return StripRichTextTags(card.GetDescriptionForPile(pile)).Replace("\n", " "); }
