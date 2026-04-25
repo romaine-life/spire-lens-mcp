@@ -1,0 +1,10 @@
+{
+  "id": "SpireLensMcp",
+  "name": "SpireLens MCP",
+  "author": "nelsong6",
+  "description": "MCP bridge for Slay the Spire 2 — exposes game state and actions over HTTP for SpireLens-driven validation. Vendored from kunology/STS2MCP under MIT.",
+  "version": "0.3.4",
+  "has_pck": false,
+  "has_dll": true,
+  "affects_gameplay": false
+}
