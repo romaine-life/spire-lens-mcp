@@ -132,6 +132,60 @@ async def proceed_to_map() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Dev validation
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def reload_spirelens_core() -> str:
+    """Reload the SpireLens hot-reloadable Core assembly through the in-game bridge.
+
+    Use after building/deploying SpireLens.Core.dll and before screenshotting changed
+    SpireLens behavior. This invokes the same loader reload path as the in-game F5
+    hotkey, when SpireLens is loaded.
+    """
+    try:
+        return await _post({"action": "dev_reload_spirelens_core"})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def start_singleplayer_run(character: str = "Ironclad", ascension: int = 0, seed: str | None = None) -> str:
+    """Start a dev singleplayer run without clicking through the main menu.
+
+    Args:
+        character: Character id or display name, such as "Ironclad", "Silent", "Regent", "Necrobinder", or "Defect".
+        ascension: Ascension level to start.
+        seed: Optional run seed. If omitted, the game generates one.
+    """
+    body: dict = {
+        "action": "dev_start_singleplayer_run",
+        "character": character,
+        "ascension": ascension,
+    }
+    if seed is not None:
+        body["seed"] = seed
+    try:
+        return await _post(body)
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def enter_debug_room(room_type: str = "monster") -> str:
+    """Move the current run into a debug room for live validation setup.
+
+    Args:
+        room_type: STS2 RoomType value, such as "Monster", "Elite", "Boss", "Treasure", "Shop", "Event", or "RestSite".
+    """
+    try:
+        return await _post({"action": "dev_enter_room", "room_type": room_type})
+    except Exception as e:
+        return _handle_error(e)
+
+
+# ---------------------------------------------------------------------------
 # Combat (state_type: monster / elite / boss)
 # ---------------------------------------------------------------------------
 

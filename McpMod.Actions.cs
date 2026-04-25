@@ -40,6 +40,9 @@ public static partial class McpMod
 {
     private static Dictionary<string, object?> ExecuteAction(string action, Dictionary<string, JsonElement> data)
     {
+        if (IsDevAction(action))
+            return ExecuteDevAction(action, data);
+
         if (!RunManager.Instance.IsInProgress)
             return Error("No run in progress");
 
