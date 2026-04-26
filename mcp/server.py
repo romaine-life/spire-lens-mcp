@@ -6,7 +6,12 @@ as MCP tools for Claude Desktop / Claude Code.
 
 import argparse
 import json
+import os
+import re
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -51,6 +56,144 @@ async def _mp_post(body: dict) -> str:
         r = await client.post(_mp_url(), json=body)
         r.raise_for_status()
         return r.text
+
+
+
+
+def _safe_screenshot_name(name: str | None) -> str:
+    value = (name or "sts2-screenshot").strip()
+    if not value:
+        value = "sts2-screenshot"
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
+    if not value:
+        value = "sts2-screenshot"
+    if not value.lower().endswith(".png"):
+        value += ".png"
+    return value
+
+
+def _screenshot_dir() -> Path:
+    configured = os.environ.get("SCREENSHOT_DIR")
+    if configured and configured.strip():
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / "sts2-screenshots"
+
+
+def _capture_sts2_window(output_path: Path) -> dict:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    script = r'''
+param([Parameter(Mandatory = $true)][string]$OutputPath)
+
+Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class Sts2CaptureNative {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT {
+        public int X;
+        public int Y;
+    }
+}
+"@
+
+$matches = New-Object System.Collections.Generic.List[object]
+$callback = [Sts2CaptureNative+EnumWindowsProc]{
+    param([IntPtr]$hWnd, [IntPtr]$lParam)
+    if (-not [Sts2CaptureNative]::IsWindowVisible($hWnd)) { return $true }
+    $titleBuilder = New-Object System.Text.StringBuilder 512
+    [void][Sts2CaptureNative]::GetWindowText($hWnd, $titleBuilder, $titleBuilder.Capacity)
+    $title = $titleBuilder.ToString()
+    if ($title -match 'Slay the Spire 2|STS2') {
+        $rect = New-Object Sts2CaptureNative+RECT
+        if ([Sts2CaptureNative]::GetClientRect($hWnd, [ref]$rect)) {
+            $width = $rect.Right - $rect.Left
+            $height = $rect.Bottom - $rect.Top
+            if ($width -gt 0 -and $height -gt 0) {
+                $point = New-Object Sts2CaptureNative+POINT
+                $point.X = 0
+                $point.Y = 0
+                [void][Sts2CaptureNative]::ClientToScreen($hWnd, [ref]$point)
+                $matches.Add([pscustomobject]@{
+                    Handle = $hWnd
+                    Title = $title
+                    X = $point.X
+                    Y = $point.Y
+                    Width = $width
+                    Height = $height
+                }) | Out-Null
+            }
+        }
+    }
+    return $true
+}
+
+[void][Sts2CaptureNative]::EnumWindows($callback, [IntPtr]::Zero)
+$target = $matches | Sort-Object -Property Width, Height -Descending | Select-Object -First 1
+if ($null -eq $target) {
+    throw "STS2 window not found. Expected a visible window title containing 'Slay the Spire 2' or 'STS2'."
+}
+
+$bitmap = New-Object System.Drawing.Bitmap($target.Width, $target.Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+try {
+    $graphics.CopyFromScreen($target.X, $target.Y, 0, 0, $bitmap.Size)
+    $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+    $graphics.Dispose()
+    $bitmap.Dispose()
+}
+
+[pscustomobject]@{
+    status = 'ok'
+    path = $OutputPath
+    width = $target.Width
+    height = $target.Height
+    target = 'sts2_window_client_area'
+    window_title = $target.Title
+    window_x = $target.X
+    window_y = $target.Y
+} | ConvertTo-Json -Compress
+'''
+
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script, "-OutputPath", str(output_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise RuntimeError(stderr)
+    return json.loads(completed.stdout.strip())
 
 
 def _handle_error(e: Exception) -> str:
