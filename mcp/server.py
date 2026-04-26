@@ -207,6 +207,24 @@ def _handle_error(e: Exception) -> str:
 # ---------------------------------------------------------------------------
 # General
 # ---------------------------------------------------------------------------
+@mcp.tool()
+async def capture_screenshot(name: str | None = None) -> str:
+    """Capture the full visible Slay the Spire 2 game window.
+
+    This is the canonical screenshot path for live validation. It captures the
+    STS2 window client area, not an arbitrary desktop region, and writes a PNG
+    under SCREENSHOT_DIR. Use this for evidence whenever a live run, combat,
+    tooltip, or UI state is being validated.
+
+    Args:
+        name: Optional PNG file name. Unsafe characters are replaced with dashes.
+    """
+    try:
+        output_path = _screenshot_dir() / _safe_screenshot_name(name)
+        metadata = _capture_sts2_window(output_path)
+        return json.dumps(metadata, indent=2)
+    except Exception as e:
+        return _handle_error(e)
 
 
 @mcp.tool()
