@@ -726,6 +726,18 @@ async def reload_spirelens_core() -> str:
 
 
 @mcp.tool()
+async def bridge_health() -> str:
+    """Check whether the in-game SpireLens MCP HTTP bridge is reachable."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{_base_url}/")
+            r.raise_for_status()
+            return r.text
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def set_spirelens_view_stats_enabled(enabled: bool = True) -> str:
     """Turn SpireLens View Stats on or off through the in-game runtime bridge.
 
@@ -737,6 +749,23 @@ async def set_spirelens_view_stats_enabled(enabled: bool = True) -> str:
         return await _post({
             "action": "dev_set_spirelens_view_stats_enabled",
             "enabled": enabled,
+        })
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def list_visible_cards(surface: str = "hand") -> str:
+    """List visible cards on a UI surface without changing hover state.
+
+    Use this before `show_card_tooltip` to discover stable card ids and visible
+    indices. Supported surfaces match show_card_tooltip: hand, card_select/deck/grid,
+    and card_reward/reward.
+    """
+    try:
+        return await _post({
+            "action": "dev_list_visible_cards",
+            "surface": surface,
         })
     except Exception as e:
         return _handle_error(e)

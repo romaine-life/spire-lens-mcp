@@ -69,6 +69,7 @@ public static partial class McpMod
             "dev_enter_room" => ExecuteDevEnterRoom(data),
             "dev_configure_test_combat" => ExecuteDevConfigureTestCombat(data),
             "dev_set_spirelens_view_stats_enabled" => ExecuteDevSetSpireLensViewStatsEnabled(data),
+            "dev_list_visible_cards" => ExecuteDevListVisibleCards(data),
             "dev_show_card_tooltip" => ExecuteDevShowCardTooltip(data),
             _ => Error($"Unknown dev action: {action}")
         };
@@ -166,12 +167,22 @@ public static partial class McpMod
             ["card_index"] = resolvedIndex,
             ["card_id"] = holder!.CardModel?.Id.Entry,
             ["card_name"] = cardName,
-            ["visible_cards"] = holders.Select((h, i) => new Dictionary<string, object?>
-            {
-                ["index"] = i,
-                ["card_id"] = h.CardModel?.Id.Entry,
-                ["card_name"] = SafeGetText(() => h.CardModel?.Title) ?? "unknown"
-            }).ToList()
+            ["visible_cards"] = BuildVisibleCardList(holders)
+        };
+    }
+
+    private static Dictionary<string, object?> ExecuteDevListVisibleCards(Dictionary<string, JsonElement> data)
+    {
+        string surface = GetString(data, "surface", "hand").ToLowerInvariant();
+        if (!TryResolveCardHolders(surface, out var holders, out var error))
+            return Error(error);
+
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["surface"] = surface,
+            ["count"] = holders.Count,
+            ["cards"] = BuildVisibleCardList(holders)
         };
     }
 
@@ -923,50 +934,8 @@ public static partial class McpMod
         resolvedIndex = index;
         error = "";
 
-        switch (surface)
-        {
-            case "hand":
-                var hand = NPlayerHand.Instance;
-                if (hand == null)
-                {
-                    error = "Player hand is not available.";
-                    return false;
-                }
-                holders = hand.ActiveHolders.Cast<NCardHolder>().ToList();
-                break;
-
-            case "card_select":
-            case "deck":
-            case "grid":
-                var selectOverlay = NOverlayStack.Instance?.Peek();
-                if (selectOverlay is NCardGridSelectionScreen gridScreen)
-                {
-                    holders = FindAllSortedByPosition<NGridCardHolder>(gridScreen).Cast<NCardHolder>().ToList();
-                    break;
-                }
-                if (selectOverlay is NChooseACardSelectionScreen chooseScreen)
-                {
-                    holders = FindAllSortedByPosition<NGridCardHolder>(chooseScreen).Cast<NCardHolder>().ToList();
-                    break;
-                }
-                error = "No card selection grid is open.";
-                return false;
-
-            case "card_reward":
-            case "reward":
-                var rewardOverlay = NOverlayStack.Instance?.Peek();
-                if (rewardOverlay is not NCardRewardSelectionScreen rewardScreen)
-                {
-                    error = "Card reward selection screen is not open.";
-                    return false;
-                }
-                holders = FindAllSortedByPosition<NCardHolder>(rewardScreen);
-                break;
-
-            default:
-                error = $"Unknown surface '{surface}'. Expected hand, card_select, deck, grid, or card_reward.";
-                return false;
-        }
+        if (!TryResolveCardHolders(surface, out holders, out error))
+            return false;
 
         if (!string.IsNullOrWhiteSpace(cardId) || !string.IsNullOrWhiteSpace(cardName))
         {
@@ -1008,6 +977,60 @@ public static partial class McpMod
         return true;
     }
 
+    private static bool TryResolveCardHolders(
+        string surface,
+        out IReadOnlyList<NCardHolder> holders,
+        out string error)
+    {
+        holders = Array.Empty<NCardHolder>();
+        error = "";
+
+        switch (surface)
+        {
+            case "hand":
+                var hand = NPlayerHand.Instance;
+                if (hand == null)
+                {
+                    error = "Player hand is not available.";
+                    return false;
+                }
+                holders = hand.ActiveHolders.Cast<NCardHolder>().ToList();
+                return true;
+
+            case "card_select":
+            case "deck":
+            case "grid":
+                var selectOverlay = NOverlayStack.Instance?.Peek();
+                if (selectOverlay is NCardGridSelectionScreen gridScreen)
+                {
+                    holders = FindAllSortedByPosition<NGridCardHolder>(gridScreen).Cast<NCardHolder>().ToList();
+                    return true;
+                }
+                if (selectOverlay is NChooseACardSelectionScreen chooseScreen)
+                {
+                    holders = FindAllSortedByPosition<NGridCardHolder>(chooseScreen).Cast<NCardHolder>().ToList();
+                    return true;
+                }
+                error = "No card selection grid is open.";
+                return false;
+
+            case "card_reward":
+            case "reward":
+                var rewardOverlay = NOverlayStack.Instance?.Peek();
+                if (rewardOverlay is not NCardRewardSelectionScreen rewardScreen)
+                {
+                    error = "Card reward selection screen is not open.";
+                    return false;
+                }
+                holders = FindAllSortedByPosition<NCardHolder>(rewardScreen);
+                return true;
+
+            default:
+                error = $"Unknown surface '{surface}'. Expected hand, card_select, deck, grid, or card_reward.";
+                return false;
+        }
+    }
+
     private static bool CardHolderMatches(NCardHolder holder, string cardId, string cardName)
     {
         if (!string.IsNullOrWhiteSpace(cardId))
@@ -1040,6 +1063,19 @@ public static partial class McpMod
     private static string FormatCardHolderList(IReadOnlyList<NCardHolder> holders)
         => string.Join(", ", holders.Select((h, i) =>
             $"{i}:{h.CardModel?.Id.Entry ?? "unknown"}:{SafeGetText(() => h.CardModel?.Title) ?? "unknown"}"));
+
+    private static List<Dictionary<string, object?>> BuildVisibleCardList(IReadOnlyList<NCardHolder> holders)
+        => holders.Select((h, i) => new Dictionary<string, object?>
+        {
+            ["index"] = i,
+            ["card_id"] = h.CardModel?.Id.Entry,
+            ["card_name"] = SafeGetText(() => h.CardModel?.Title) ?? "unknown",
+            ["global_position"] = new Dictionary<string, object?>
+            {
+                ["x"] = h.GlobalPosition.X,
+                ["y"] = h.GlobalPosition.Y
+            }
+        }).ToList();
 
     private static IReadOnlyList<string> GetStringArray(Dictionary<string, JsonElement> data, string key)
     {
