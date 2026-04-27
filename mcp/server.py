@@ -5,6 +5,7 @@ as MCP tools for Claude Desktop / Claude Code.
 """
 
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -357,6 +358,77 @@ async def configure_test_combat(
         })
     except Exception as e:
         return _handle_error(e)
+
+
+@mcp.tool()
+async def prepare_test_combat(
+    character: str = "Ironclad",
+    hand: list[str] | None = None,
+    draw_pile: list[str] | None = None,
+    discard_pile: list[str] | None = None,
+    exhaust_pile: list[str] | None = None,
+    enemy_hp: int = 999,
+    seed: str | None = None,
+) -> str:
+    """Prepare a deterministic single-combat scenario in one call.
+
+    This is the default live-validation entry point. It starts a run when needed,
+    enters a Monster debug room when needed, then configures card piles and enemy
+    HP. Use this for fast card/UI/effect validation unless investigation says the
+    issue requires a special combat shape.
+
+    Args:
+        character: Character id or display name for the run.
+        hand: Card ids or exact names to put in hand, left to right.
+        draw_pile: Card ids or exact names to put in draw pile.
+        discard_pile: Card ids or exact names to put in discard pile.
+        exhaust_pile: Card ids or exact names to put in exhaust pile.
+        enemy_hp: HP to set on all living enemies. Defaults to 999.
+        seed: Optional run seed when a new run must be started.
+    """
+    try:
+        state_text = await _get({"format": "json"})
+        state = json.loads(state_text)
+
+        if state.get("state_type") == "menu":
+            body: dict = {
+                "action": "dev_start_singleplayer_run",
+                "character": character,
+                "ascension": 0,
+            }
+            if seed is not None:
+                body["seed"] = seed
+            await _post(body)
+            await _wait_for_state(lambda s: s.get("state_type") != "menu", timeout_seconds=20)
+
+        state_text = await _get({"format": "json"})
+        state = json.loads(state_text)
+        if state.get("state_type") not in {"monster", "elite", "boss"}:
+            await _post({"action": "dev_enter_room", "room_type": "Monster"})
+            await _wait_for_state(lambda s: s.get("state_type") in {"monster", "elite", "boss"}, timeout_seconds=20)
+
+        return await _post({
+            "action": "dev_configure_test_combat",
+            "hand": hand or [],
+            "draw_pile": draw_pile or [],
+            "discard_pile": discard_pile or [],
+            "exhaust_pile": exhaust_pile or [],
+            "enemy_hp": enemy_hp,
+        })
+    except Exception as e:
+        return _handle_error(e)
+
+
+async def _wait_for_state(predicate, timeout_seconds: int) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    last_state: dict = {}
+    while asyncio.get_running_loop().time() < deadline:
+        state_text = await _get({"format": "json"})
+        last_state = json.loads(state_text)
+        if predicate(last_state):
+            return last_state
+        await asyncio.sleep(0.5)
+    raise TimeoutError(f"Timed out waiting for requested game state. Last state: {last_state}")
 
 
 # ---------------------------------------------------------------------------
