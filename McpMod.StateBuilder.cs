@@ -46,6 +46,22 @@ public static partial class McpMod
     {
         var result = new Dictionary<string, object?>();
 
+        if (_currentRunLoadInProgress)
+        {
+            result["state_type"] = "loading";
+            result["message"] = "Current run save is still loading.";
+            result["load_started_at_utc"] = _currentRunLoadStartedAtUtc.ToString("o");
+            return result;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_currentRunLoadError))
+        {
+            result["state_type"] = "error";
+            result["message"] = "Current run save load failed.";
+            result["error"] = _currentRunLoadError;
+            return result;
+        }
+
         if (!RunManager.Instance.IsInProgress)
         {
             result["state_type"] = "menu";
@@ -119,7 +135,13 @@ public static partial class McpMod
             {
                 // Check for in-combat hand card selection (e.g., "Select a card to exhaust")
                 var playerHand = NPlayerHand.Instance;
-                if (playerHand != null && playerHand.IsInCardSelection)
+                if (playerHand == null)
+                {
+                    result["state_type"] = "loading";
+                    result["message"] = "Combat state exists, but the combat UI is not ready yet.";
+                    result["battle"] = BuildBattleState(runState, combatRoom);
+                }
+                else if (playerHand.IsInCardSelection)
                 {
                     result["state_type"] = "hand_select";
                     result["hand_select"] = BuildHandSelectState(playerHand, runState);
