@@ -149,9 +149,8 @@ public static partial class McpMod
 
         foreach (var obj in objects)
         {
-            var info = buildInfo(obj);
-            string id = Convert.ToString(info.GetValueOrDefault("id")) ?? "";
-            string name = Convert.ToString(info.GetValueOrDefault("name")) ?? "";
+            string id = GetCatalogEntryId(obj) ?? "";
+            string name = SafeGetText(() => GetCatalogMemberValue(obj, "Title")) ?? "";
             string normalizedId = NormalizeCatalogKey(id);
             string normalizedName = NormalizeCatalogKey(name);
 
@@ -162,7 +161,10 @@ public static partial class McpMod
             else if (normalizedName.Contains(normalizedQuery)) score = 65;
 
             if (score > 0)
+            {
+                var info = buildInfo(obj);
                 scored.Add((score, name, info));
+            }
         }
 
         return scored
