@@ -66,6 +66,8 @@ public static partial class McpMod
         {
             "lookup_card" => ExecuteCatalogLookupCard(data),
             "list_cards" => ExecuteCatalogListCards(data),
+            "lookup_relic" => ExecuteCatalogLookupRelic(data),
+            "list_relics" => ExecuteCatalogListRelics(data),
             "lookup_character" => ExecuteCatalogLookupCharacter(data),
             "list_characters" => BuildCatalogCharactersResult(),
             "get_validation_capabilities" => BuildValidationCapabilities(),
@@ -75,11 +77,13 @@ public static partial class McpMod
     private static Dictionary<string, object?> BuildCatalogSummary()
     {
         var cards = GetCatalogCards();
+        var relics = GetCatalogRelics();
         var characters = GetCatalogCharacters();
         return new Dictionary<string, object?>
         {
             ["status"] = "ok",
             ["card_count"] = cards.Count,
+            ["relic_count"] = relics.Count,
             ["character_count"] = characters.Count,
             ["characters"] = characters.Select(BuildCatalogCharacterInfo).ToList()
         };
@@ -124,6 +128,12 @@ public static partial class McpMod
                 BuildValidationSurface("card_select", "active card selection grid", false, true, true),
                 BuildValidationSurface("card_reward", "active card reward choices", false, true, true)
             },
+            ["relic_surfaces"] = new List<Dictionary<string, object?>>
+            {
+                BuildRelicValidationSurface("player_relic_bar", "owned relics shown in the active run UI", false),
+                BuildRelicValidationSurface("relic_select", "active choose-a-relic overlay", true),
+                BuildRelicValidationSurface("treasure", "active treasure room relic rewards", true)
+            },
             ["recommended_tooltip_evidence_flow"] = new[]
             {
                 "set_spirelens_view_stats_enabled(enabled=true, verbose_hand_stats=true)",
@@ -143,6 +153,7 @@ public static partial class McpMod
             ["scenario_setup"] = new Dictionary<string, object?>
             {
                 ["preferred_card_availability"] = "Materialize a deterministic scenario save with a small deck of real card ids.",
+                ["preferred_relic_availability"] = "Materialize relic scenarios with the relics/add_relics save fields using real relic ids from lookup_relic/list_relics.",
                 ["base_saves"] = new[] { "base_ironclad", "base_silent", "base_defect", "base_regent", "base_necrobinder" },
                 ["normal_encounter_default"] = "FUZZY_WURM_CRAWLER_WEAK"
             },
@@ -174,6 +185,28 @@ public static partial class McpMod
                 outputContract: "JSON with status ok, filters echoed, count, and cards[] containing id/name/type/rarity/description/owners.",
                 commonFailures: new[] { "overly narrow filter returns too few cards" },
                 examples: new[] { "list_cards(owner=\"REGENT\", type=\"Skill\", limit=20)" }),
+            BuildValidationTool(
+                "lookup_relic",
+                "catalog",
+                "Resolve a relic id, display name, rarity, and ambiguity status from the live STS2 model catalog.",
+                mutatesState: false,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: true,
+                outputContract: "JSON with status ok|not_found|ambiguous, kind=relic, match_count, matches[], and relic when exactly one match exists.",
+                commonFailures: new[] { "query missing", "not_found", "ambiguous" },
+                examples: new[] { "lookup_relic(query=\"Pen Nib\")", "lookup_relic(query=\"PEN_NIB\")" }),
+            BuildValidationTool(
+                "list_relics",
+                "catalog",
+                "List real relic ids from the live catalog using rarity/query filters. Use for relic scenario setup and issue disambiguation.",
+                mutatesState: false,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: true,
+                outputContract: "JSON with status ok, filters echoed, count, and relics[] containing id/name/rarity/description.",
+                commonFailures: new[] { "overly narrow filter returns too few relics" },
+                examples: new[] { "list_relics(query=\"nib\")", "list_relics(rarity=\"Rare\", limit=20)" }),
             BuildValidationTool(
                 "lookup_character",
                 "catalog",
@@ -355,6 +388,21 @@ public static partial class McpMod
             ["supports_card_id_lookup"] = supportsShowCardTooltip
         };
 
+    private static Dictionary<string, object?> BuildRelicValidationSurface(
+        string name,
+        string description,
+        bool screenSpecific)
+        => new()
+        {
+            ["name"] = name,
+            ["description"] = description,
+            ["screen_specific"] = screenSpecific,
+            ["state_source"] = "get_game_state",
+            ["supports_relic_id_lookup"] = true,
+            ["supports_screenshot"] = true,
+            ["notes"] = "Current MCP evidence can confirm visible relic identity/state through get_game_state and screenshots. Dedicated forced relic-hover support is a future capability."
+        };
+
     private static Dictionary<string, object?> ExecuteCatalogLookupCharacter(Dictionary<string, JsonElement> data)
     {
         string query = GetString(data, "query", "");
@@ -374,6 +422,17 @@ public static partial class McpMod
         int maxMatches = Math.Clamp(GetInt(data, "max_matches", 10), 1, 50);
         var matches = MatchCatalogObjects(GetCatalogCards(), query, BuildCatalogCardInfo).Take(maxMatches).ToList();
         return BuildLookupResult("card", query, matches);
+    }
+
+    private static Dictionary<string, object?> ExecuteCatalogLookupRelic(Dictionary<string, JsonElement> data)
+    {
+        string query = GetString(data, "query", "");
+        if (string.IsNullOrWhiteSpace(query))
+            return Error("Missing 'query'.");
+
+        int maxMatches = Math.Clamp(GetInt(data, "max_matches", 10), 1, 50);
+        var matches = MatchCatalogObjects(GetCatalogRelics(), query, BuildCatalogRelicInfo).Take(maxMatches).ToList();
+        return BuildLookupResult("relic", query, matches);
     }
 
     private static Dictionary<string, object?> ExecuteCatalogListCards(Dictionary<string, JsonElement> data)
@@ -403,6 +462,33 @@ public static partial class McpMod
             ["query"] = string.IsNullOrWhiteSpace(query) ? null : query,
             ["count"] = cards.Count,
             ["cards"] = cards
+        };
+    }
+
+    private static Dictionary<string, object?> ExecuteCatalogListRelics(Dictionary<string, JsonElement> data)
+    {
+        string rarity = GetString(data, "rarity", "");
+        string query = GetString(data, "query", "");
+        int limit = Math.Clamp(GetInt(data, "limit", 50), 1, 300);
+
+        string normalizedRarity = NormalizeCatalogKey(rarity);
+        string normalizedQuery = NormalizeCatalogKey(query);
+
+        var relics = GetCatalogRelics()
+            .Select(BuildCatalogRelicInfo)
+            .Where(relic => MatchesCatalogRelicFilter(relic, normalizedRarity, normalizedQuery))
+            .OrderBy(relic => Convert.ToString(relic.GetValueOrDefault("name")), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(relic => Convert.ToString(relic.GetValueOrDefault("id")), StringComparer.OrdinalIgnoreCase)
+            .Take(limit)
+            .ToList();
+
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["rarity"] = string.IsNullOrWhiteSpace(rarity) ? null : rarity,
+            ["query"] = string.IsNullOrWhiteSpace(query) ? null : query,
+            ["count"] = relics.Count,
+            ["relics"] = relics
         };
     }
 
@@ -444,6 +530,23 @@ public static partial class McpMod
         }
 
         return false;
+    }
+
+    private static bool MatchesCatalogRelicFilter(
+        Dictionary<string, object?> relic,
+        string normalizedRarity,
+        string normalizedQuery)
+    {
+        if (!string.IsNullOrWhiteSpace(normalizedRarity)
+            && NormalizeCatalogKey(Convert.ToString(relic.GetValueOrDefault("rarity")) ?? "") != normalizedRarity)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(normalizedQuery))
+            return true;
+
+        string id = NormalizeCatalogKey(Convert.ToString(relic.GetValueOrDefault("id")) ?? "");
+        string name = NormalizeCatalogKey(Convert.ToString(relic.GetValueOrDefault("name")) ?? "");
+        return id.Contains(normalizedQuery) || name.Contains(normalizedQuery);
     }
 
     private static Dictionary<string, object?> BuildLookupResult(string kind, string query, List<Dictionary<string, object?>> matches)
@@ -526,6 +629,13 @@ public static partial class McpMod
         return DistinctCatalogObjectsById(cards);
     }
 
+    private static List<object> GetCatalogRelics()
+    {
+        var relics = new List<object>();
+        relics.AddRange(GetStaticModelDbSequence("AllRelics", "Relics", "RelicModels").Where(IsCatalogRelicLike));
+        return DistinctCatalogObjectsById(relics);
+    }
+
     private static Dictionary<string, object?> BuildCatalogCharacterInfo(object character)
     {
         var cardPool = GetCatalogMemberValue(character, "CardPool");
@@ -564,6 +674,16 @@ public static partial class McpMod
             : GetCatalogCardOwners(cardId).Select(BuildCatalogCharacterInfo).ToList();
         return info;
     }
+
+    private static Dictionary<string, object?> BuildCatalogRelicInfo(object relic)
+        => new()
+        {
+            ["id"] = GetCatalogEntryId(relic),
+            ["name"] = SafeGetText(() => GetCatalogMemberValue(relic, "Title")),
+            ["rarity"] = GetCatalogMemberValue(relic, "Rarity")?.ToString(),
+            ["description"] = SafeGetText(() => GetCatalogMemberValue(relic, "DynamicDescription"))
+                             ?? SafeGetText(() => GetCatalogMemberValue(relic, "Description"))
+        };
 
     private static List<object> GetCatalogCardOwners(string cardId)
     {
@@ -634,6 +754,12 @@ public static partial class McpMod
         => GetCatalogEntryId(obj) != null
            && SafeGetText(() => GetCatalogMemberValue(obj, "Title")) != null
            && GetCatalogMemberValue(obj, "Type") != null;
+
+    private static bool IsCatalogRelicLike(object obj)
+        => GetCatalogEntryId(obj) != null
+           && SafeGetText(() => GetCatalogMemberValue(obj, "Title")) != null
+           && GetCatalogMemberValue(obj, "Rarity") != null
+           && GetCatalogMemberValue(obj, "Type") == null;
 
     private static List<object> DistinctCatalogObjectsById(IEnumerable<object> objects)
     {

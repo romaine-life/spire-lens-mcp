@@ -343,6 +343,50 @@ async def list_cards(
 
 
 @mcp.tool()
+async def lookup_relic(query: str, max_matches: int = 10) -> str:
+    """Look up relic identity from the live STS2 model catalog.
+
+    Use this instead of model memory whenever an issue names a relic. The result
+    is structured JSON with status `ok`, `not_found`, or `ambiguous`; abort the
+    investigation on `not_found` or `ambiguous` instead of guessing.
+
+    Args:
+        query: Relic id, display name, or partial name from the issue.
+        max_matches: Maximum ambiguous matches to return.
+    """
+    try:
+        return await _catalog_post({"action": "lookup_relic", "query": query, "max_matches": max_matches})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def list_relics(
+    rarity: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List relics from the live STS2 model catalog with optional filters.
+
+    Use this when choosing fixture relics or disambiguating relic-stat issues.
+
+    Args:
+        rarity: Optional relic rarity filter, such as "Rare" or "Common".
+        query: Optional id/name substring filter.
+        limit: Maximum relics to return.
+    """
+    try:
+        return await _catalog_post({
+            "action": "list_relics",
+            "rarity": rarity or "",
+            "query": query or "",
+            "limit": limit,
+        })
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def lookup_character(query: str) -> str:
     """Look up character identity from the live STS2 model catalog.
 
