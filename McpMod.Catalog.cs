@@ -65,6 +65,7 @@ public static partial class McpMod
         => action switch
         {
             "lookup_card" => ExecuteCatalogLookupCard(data),
+            "list_cards" => ExecuteCatalogListCards(data),
             "lookup_character" => ExecuteCatalogLookupCharacter(data),
             "list_characters" => BuildCatalogCharactersResult(),
             _ => Error($"Unknown catalog action: {action}")
@@ -109,6 +110,76 @@ public static partial class McpMod
         int maxMatches = Math.Clamp(GetInt(data, "max_matches", 10), 1, 50);
         var matches = MatchCatalogObjects(GetCatalogCards(), query, BuildCatalogCardInfo).Take(maxMatches).ToList();
         return BuildLookupResult("card", query, matches);
+    }
+
+    private static Dictionary<string, object?> ExecuteCatalogListCards(Dictionary<string, JsonElement> data)
+    {
+        string owner = GetString(data, "owner", "");
+        string type = GetString(data, "type", "");
+        string query = GetString(data, "query", "");
+        int limit = Math.Clamp(GetInt(data, "limit", 50), 1, 200);
+
+        string normalizedOwner = NormalizeCatalogKey(owner);
+        string normalizedType = NormalizeCatalogKey(type);
+        string normalizedQuery = NormalizeCatalogKey(query);
+
+        var cards = GetCatalogCards()
+            .Select(BuildCatalogCardInfo)
+            .Where(card => MatchesCatalogCardFilter(card, normalizedOwner, normalizedType, normalizedQuery))
+            .OrderBy(card => Convert.ToString(card.GetValueOrDefault("name")), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(card => Convert.ToString(card.GetValueOrDefault("id")), StringComparer.OrdinalIgnoreCase)
+            .Take(limit)
+            .ToList();
+
+        return new Dictionary<string, object?>
+        {
+            ["status"] = "ok",
+            ["owner"] = string.IsNullOrWhiteSpace(owner) ? null : owner,
+            ["type"] = string.IsNullOrWhiteSpace(type) ? null : type,
+            ["query"] = string.IsNullOrWhiteSpace(query) ? null : query,
+            ["count"] = cards.Count,
+            ["cards"] = cards
+        };
+    }
+
+    private static bool MatchesCatalogCardFilter(
+        Dictionary<string, object?> card,
+        string normalizedOwner,
+        string normalizedType,
+        string normalizedQuery)
+    {
+        if (!string.IsNullOrWhiteSpace(normalizedType)
+            && NormalizeCatalogKey(Convert.ToString(card.GetValueOrDefault("type")) ?? "") != normalizedType)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(normalizedQuery))
+        {
+            string id = NormalizeCatalogKey(Convert.ToString(card.GetValueOrDefault("id")) ?? "");
+            string name = NormalizeCatalogKey(Convert.ToString(card.GetValueOrDefault("name")) ?? "");
+            if (!id.Contains(normalizedQuery) && !name.Contains(normalizedQuery))
+                return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(normalizedOwner))
+            return true;
+
+        if (card.GetValueOrDefault("owners") is not IEnumerable<object> owners)
+            return false;
+
+        foreach (var owner in owners)
+        {
+            if (owner is not Dictionary<string, object?> ownerInfo)
+                continue;
+
+            string ownerId = NormalizeCatalogKey(Convert.ToString(ownerInfo.GetValueOrDefault("id")) ?? "");
+            string ownerName = NormalizeCatalogKey(Convert.ToString(ownerInfo.GetValueOrDefault("name")) ?? "");
+            string poolId = NormalizeCatalogKey(Convert.ToString(ownerInfo.GetValueOrDefault("card_pool_id")) ?? "");
+            string poolName = NormalizeCatalogKey(Convert.ToString(ownerInfo.GetValueOrDefault("card_pool_name")) ?? "");
+            if (ownerId == normalizedOwner || ownerName == normalizedOwner || poolId == normalizedOwner || poolName == normalizedOwner)
+                return true;
+        }
+
+        return false;
     }
 
     private static Dictionary<string, object?> BuildLookupResult(string kind, string query, List<Dictionary<string, object?>> matches)

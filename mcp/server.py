@@ -7,6 +7,8 @@ as MCP tools for Claude Desktop / Claude Code.
 import argparse
 import asyncio
 import base64
+import copy
+import hashlib
 import json
 import os
 import re
@@ -109,6 +111,122 @@ def _screenshot_dir() -> Path:
     return Path(tempfile.gettempdir()) / "sts2-screenshots"
 
 
+def _user_data_dir() -> Path:
+    configured = os.environ.get("STS2_USER_DATA_DIR")
+    if configured and configured.strip():
+        return Path(configured)
+    appdata = os.environ.get("APPDATA")
+    if appdata and appdata.strip():
+        return Path(appdata) / "SlayTheSpire2"
+    return Path.home() / "AppData" / "Roaming" / "SlayTheSpire2"
+
+
+def _base_save_dir() -> Path:
+    configured = os.environ.get("STS2_BASE_SAVE_DIR")
+    if configured and configured.strip():
+        return Path(configured)
+    return _user_data_dir() / "SpireLensMcp" / "base_saves"
+
+
+def _scenario_save_dir() -> Path:
+    configured = os.environ.get("STS2_SCENARIO_SAVE_DIR")
+    if configured and configured.strip():
+        return Path(configured)
+    return _user_data_dir() / "SpireLensMcp" / "scenario_saves"
+
+
+def _current_run_save_path() -> Path:
+    configured = os.environ.get("STS2_CURRENT_RUN_SAVE")
+    if configured and configured.strip():
+        return Path(configured)
+    candidates = sorted(
+        _user_data_dir().glob("steam/*/modded/profile1/saves/current_run.save"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+    return _user_data_dir() / "steam" / "76561198062015438" / "modded" / "profile1" / "saves" / "current_run.save"
+
+
+def _safe_save_name(name: str) -> str:
+    value = (name or "").strip()
+    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
+    if not value:
+        raise ValueError("save name is required")
+    if value.lower().endswith(".save"):
+        value = value[:-5]
+    return value
+
+
+def _named_save_path(root: Path, name: str) -> Path:
+    return root / f"{_safe_save_name(name)}.save"
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_save_json(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("save root must be a JSON object")
+    return data
+
+
+def _write_save_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def _normalize_card_id(card_id: str) -> str:
+    value = card_id.strip().upper()
+    return value if value.startswith("CARD.") else f"CARD.{value}"
+
+
+def _normalize_relic_id(relic_id: str) -> str:
+    value = relic_id.strip().upper()
+    return value if value.startswith("RELIC.") else f"RELIC.{value}"
+
+
+def _card_entry(card_id: str, floor_added_to_deck: int = 1) -> dict:
+    return {"floor_added_to_deck": floor_added_to_deck, "id": _normalize_card_id(card_id)}
+
+
+def _relic_entry(relic_id: str, floor_added_to_deck: int = 1) -> dict:
+    return {"floor_added_to_deck": floor_added_to_deck, "id": _normalize_relic_id(relic_id)}
+
+
+def _save_summary(data: dict) -> dict:
+    players = data.get("players")
+    player = players[0] if isinstance(players, list) and players and isinstance(players[0], dict) else {}
+    deck = player.get("deck") if isinstance(player.get("deck"), list) else []
+    relics = player.get("relics") if isinstance(player.get("relics"), list) else []
+    return {
+        "schema_version": data.get("schema_version"),
+        "character_id": player.get("character_id"),
+        "ascension": data.get("ascension"),
+        "current_act_index": data.get("current_act_index"),
+        "floor_reached": len(data.get("visited_map_coords") or []),
+        "gold": player.get("gold"),
+        "current_hp": player.get("current_hp"),
+        "max_hp": player.get("max_hp"),
+        "max_energy": player.get("max_energy"),
+        "deck_count": len(deck),
+        "deck": [card.get("id") for card in deck if isinstance(card, dict)],
+        "relic_count": len(relics),
+        "relics": [relic.get("id") for relic in relics if isinstance(relic, dict)],
+        "pre_finished_room": data.get("pre_finished_room"),
+    }
+
+
 def _save_viewport_png(output_path: Path, metadata: dict) -> dict:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     png_base64 = metadata.get("png_base64")
@@ -147,6 +265,36 @@ async def lookup_card(query: str, max_matches: int = 10) -> str:
     """
     try:
         return await _catalog_post({"action": "lookup_card", "query": query, "max_matches": max_matches})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def list_cards(
+    owner: str | None = None,
+    type: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List cards from the live STS2 model catalog with optional filters.
+
+    Use this when choosing fixture cards. For example, ask for Regent Skill
+    cards instead of guessing ids from model memory.
+
+    Args:
+        owner: Optional character id/name/card-pool id, such as "REGENT".
+        type: Optional card type, such as "Skill", "Attack", or "Power".
+        query: Optional id/name substring filter.
+        limit: Maximum cards to return.
+    """
+    try:
+        return await _catalog_post({
+            "action": "list_cards",
+            "owner": owner or "",
+            "type": type or "",
+            "query": query or "",
+            "limit": limit,
+        })
     except Exception as e:
         return _handle_error(e)
 
@@ -199,6 +347,213 @@ async def capture_screenshot(name: str | None = None) -> str:
         output_path = _screenshot_dir() / _safe_screenshot_name(name)
         metadata = await _screenshot_get()
         return json.dumps(_save_viewport_png(output_path, metadata), indent=2)
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def list_save_files(kind: str = "base") -> str:
+    """List materialized STS2 save files managed by the MCP bridge.
+
+    Args:
+        kind: "base" for reusable character bases or "scenario" for derived test saves.
+    """
+    try:
+        root = _base_save_dir() if kind == "base" else _scenario_save_dir()
+        saves = []
+        if root.exists():
+            for path in sorted(root.glob("*.save"), key=lambda p: p.name.lower()):
+                saves.append({
+                    "name": path.stem,
+                    "path": str(path),
+                    "bytes": path.stat().st_size,
+                    "sha256": _sha256(path),
+                    "updated_at": path.stat().st_mtime,
+                })
+        return json.dumps({"status": "ok", "kind": kind, "directory": str(root), "count": len(saves), "saves": saves}, indent=2)
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def inspect_save(name: str, kind: str = "base") -> str:
+    """Inspect a managed STS2 save and return a compact structured summary.
+
+    Args:
+        name: Save name without extension, such as "base_ironclad".
+        kind: "base" or "scenario".
+    """
+    try:
+        root = _base_save_dir() if kind == "base" else _scenario_save_dir()
+        path = _named_save_path(root, name)
+        data = _load_save_json(path)
+        return json.dumps({
+            "status": "ok",
+            "kind": kind,
+            "name": _safe_save_name(name),
+            "path": str(path),
+            "bytes": path.stat().st_size,
+            "sha256": _sha256(path),
+            "summary": _save_summary(data),
+        }, indent=2)
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def materialize_scenario_save(
+    base_name: str,
+    scenario_name: str,
+    deck: list[str] | None = None,
+    add_cards: list[str] | None = None,
+    remove_cards: list[str] | None = None,
+    relics: list[str] | None = None,
+    add_relics: list[str] | None = None,
+    remove_relics: list[str] | None = None,
+    gold: int | None = None,
+    current_hp: int | None = None,
+    max_hp: int | None = None,
+    max_energy: int | None = None,
+) -> str:
+    """Create a derived scenario save by editing stable JSON save fields.
+
+    This intentionally edits only pre-combat run fields that are easy to audit:
+    deck, relics, gold, HP, and max energy. Combat piles/turn state are out of
+    scope for direct save editing until separately proven.
+
+    Args:
+        base_name: Base save name, such as "base_ironclad".
+        scenario_name: Output scenario save name.
+        deck: Optional complete replacement deck, as card ids without/with CARD.
+        add_cards: Optional card ids to append to the deck.
+        remove_cards: Optional card ids to remove from the deck, one copy per id.
+        relics: Optional complete replacement relic list, as ids without/with RELIC.
+        add_relics: Optional relic ids to append.
+        remove_relics: Optional relic ids to remove, one copy per id.
+        gold: Optional exact gold.
+        current_hp: Optional exact current HP.
+        max_hp: Optional exact max HP.
+        max_energy: Optional exact max energy.
+    """
+    try:
+        base_path = _named_save_path(_base_save_dir(), base_name)
+        output_path = _named_save_path(_scenario_save_dir(), scenario_name)
+        data = _load_save_json(base_path)
+        edited = copy.deepcopy(data)
+
+        players = edited.get("players")
+        if not isinstance(players, list) or not players or not isinstance(players[0], dict):
+            raise ValueError("save does not contain players[0]")
+        player = players[0]
+
+        if deck is not None:
+            player["deck"] = [_card_entry(card) for card in deck]
+        else:
+            current_deck = player.get("deck")
+            if not isinstance(current_deck, list):
+                current_deck = []
+            current_deck = [card for card in current_deck if isinstance(card, dict)]
+            for card_id in remove_cards or []:
+                target = _normalize_card_id(card_id)
+                for i, card in enumerate(current_deck):
+                    if card.get("id") == target:
+                        current_deck.pop(i)
+                        break
+            current_deck.extend(_card_entry(card) for card in add_cards or [])
+            player["deck"] = current_deck
+
+        if relics is not None:
+            player["relics"] = [_relic_entry(relic) for relic in relics]
+        else:
+            current_relics = player.get("relics")
+            if not isinstance(current_relics, list):
+                current_relics = []
+            current_relics = [relic for relic in current_relics if isinstance(relic, dict)]
+            for relic_id in remove_relics or []:
+                target = _normalize_relic_id(relic_id)
+                for i, relic in enumerate(current_relics):
+                    if relic.get("id") == target:
+                        current_relics.pop(i)
+                        break
+            current_relics.extend(_relic_entry(relic) for relic in add_relics or [])
+            player["relics"] = current_relics
+
+        if gold is not None:
+            player["gold"] = gold
+        if current_hp is not None:
+            player["current_hp"] = current_hp
+        if max_hp is not None:
+            player["max_hp"] = max_hp
+        if max_energy is not None:
+            player["max_energy"] = max_energy
+
+        _write_save_json(output_path, edited)
+        return json.dumps({
+            "status": "ok",
+            "base": str(base_path),
+            "scenario": str(output_path),
+            "scenario_name": _safe_save_name(scenario_name),
+            "bytes": output_path.stat().st_size,
+            "sha256": _sha256(output_path),
+            "before": _save_summary(data),
+            "after": _save_summary(edited),
+            "next_step": "Load this scenario save in-game and verify with get_game_state before using it in an agent test.",
+        }, indent=2)
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def install_save_as_current(name: str, kind: str = "scenario") -> str:
+    """Install a managed base/scenario save as STS2's current_run.save.
+
+    A timestamped backup of the previous current run save is written next to it.
+    Use this before launching/loading STS2 to validate a derived scenario save.
+
+    Args:
+        name: Managed save name without extension.
+        kind: "scenario" or "base".
+    """
+    try:
+        source_root = _base_save_dir() if kind == "base" else _scenario_save_dir()
+        source = _named_save_path(source_root, name)
+        if not source.exists():
+            raise FileNotFoundError(source)
+
+        current = _current_run_save_path()
+        current.parent.mkdir(parents=True, exist_ok=True)
+        companion = current.with_name(f"{current.name}.backup")
+        backup = None
+        if current.exists():
+            backup = current.with_name(f"{current.stem}.backup-{int(__import__('time').time())}{current.suffix}")
+            backup.write_bytes(current.read_bytes())
+        bytes_to_install = source.read_bytes()
+        current.write_bytes(bytes_to_install)
+        companion.write_bytes(bytes_to_install)
+
+        return json.dumps({
+            "status": "ok",
+            "installed": str(source),
+            "current_run_save": str(current),
+            "current_run_backup": str(companion),
+            "backup": str(backup) if backup else None,
+            "bytes": current.stat().st_size,
+            "sha256": _sha256(current),
+            "next_step": "Call validate_current_run_save while the MCP mod is running, or restart/load the game and inspect get_game_state.",
+        }, indent=2)
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def validate_current_run_save() -> str:
+    """Ask the in-game MCP mod to deserialize STS2's current_run.save.
+
+    This validates with the game's own SaveManager rather than only Python JSON
+    parsing. It does not load the run into the scene.
+    """
+    try:
+        return await _post({"action": "dev_validate_current_run_save"})
     except Exception as e:
         return _handle_error(e)
 
@@ -323,6 +678,56 @@ async def enter_debug_room(room_type: str = "monster") -> str:
 
 
 @mcp.tool()
+async def list_scenario_commands() -> str:
+    """List guarded STS2 dev-console commands available for scenario setup.
+
+    These commands use the game's own dev-console pathways and are safer for
+    scenario setup than direct model/pile mutation.
+    """
+    try:
+        return await _post({"action": "dev_list_scenario_commands"})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def run_scenario_command(command: str) -> str:
+    """Run one allowlisted STS2 dev-console command for scenario setup.
+
+    Use this as the scenario-builder substrate. The command is routed through
+    the game's DevConsole.ProcessCommand path, with only scenario-safe commands
+    exposed by the MCP mod. Dangerous commands such as cloud/delete/open/sentry
+    are not accepted.
+
+    Args:
+        command: A dev-console command such as "card MAKE_IT_SO discard",
+            "card DEFEND_REGENT", "draw 3", "fight JAW_WORM", "energy 4",
+            or "stars 3".
+    """
+    try:
+        return await _post({"action": "dev_run_scenario_command", "command": command})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
+async def configure_run_deck(deck: list[str]) -> str:
+    """Replace the current run deck before combat starts.
+
+    Use this before entering a test combat. Combat initialization registers
+    playable combat cards from the run deck; changing the deck after combat has
+    started can produce cards that appear in piles but cannot be played.
+
+    Args:
+        deck: Card ids or exact names to make the permanent deck for this scenario.
+    """
+    try:
+        return await _post({"action": "dev_configure_run_deck", "deck": deck})
+    except Exception as e:
+        return _handle_error(e)
+
+
+@mcp.tool()
 async def configure_test_combat(
     deck: list[str] | None = None,
     hand: list[str] | None = None,
@@ -338,15 +743,14 @@ async def configure_test_combat(
     """Configure the current combat into a deterministic validation fixture.
 
     Default validation should use a simple early/debug monster with high HP and
-    controlled card piles. Use this after `start_singleplayer_run` and
-    `enter_debug_room("Monster")`. For card/UI smoke tests, put the target card
-    and the needed setup cards directly into `hand`, then capture target-visible
-    screenshots. If an issue needs kills, enemy powers/statuses, multiple
-    enemies, or special enemy behavior, the investigation phase should say why
-    the default fixture is insufficient.
+    controlled card piles. Use `configure_run_deck` before entering combat, then
+    use this after `enter_debug_room("Monster")` to move already-registered
+    combat cards into hand/draw/discard/exhaust. If an issue needs kills, enemy
+    powers/statuses, multiple enemies, or special enemy behavior, the
+    investigation phase should say why the default fixture is insufficient.
 
     Args:
-        deck: Card ids or exact names to make the permanent deck for this scenario.
+        deck: Deprecated. Configure the deck before combat with `configure_run_deck`.
         hand: Card ids or exact names to put in hand, left to right.
         draw_pile: Card ids or exact names to put in draw pile.
         discard_pile: Card ids or exact names to put in discard pile.
@@ -360,7 +764,7 @@ async def configure_test_combat(
     try:
         body: dict = {
             "action": "dev_configure_test_combat",
-            "deck": deck or [],
+            "deck": [],
             "hand": hand or [],
             "draw_pile": draw_pile or [],
             "discard_pile": discard_pile or [],
@@ -431,13 +835,16 @@ async def prepare_test_combat(
 
         state_text = await _get({"format": "json"})
         state = json.loads(state_text)
+        if deck and state.get("state_type") not in {"monster", "elite", "boss"}:
+            await _post({"action": "dev_configure_run_deck", "deck": deck})
+
         if state.get("state_type") not in {"monster", "elite", "boss"}:
             await _post({"action": "dev_enter_room", "room_type": "Monster"})
             await _wait_for_state(lambda s: s.get("state_type") in {"monster", "elite", "boss"}, timeout_seconds=20)
 
         body = {
             "action": "dev_configure_test_combat",
-            "deck": deck or [],
+            "deck": [],
             "hand": hand or [],
             "draw_pile": draw_pile or [],
             "discard_pile": discard_pile or [],
