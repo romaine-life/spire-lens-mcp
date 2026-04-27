@@ -582,6 +582,8 @@ public static partial class McpMod
 
         var playerPowers = ApplyPowerSpecs(data, "player_powers", [player.Creature]);
         var enemyPowers = ApplyPowerSpecs(data, "enemy_powers", livingEnemies);
+        var visibleHandSync = RefreshVisibleHand(combatState);
+        TryResolveCardHolders("hand", out var visibleHandCards, out _);
 
         return new Dictionary<string, object?>
         {
@@ -595,8 +597,45 @@ public static partial class McpMod
             ["added"] = added,
             ["player_powers"] = playerPowers,
             ["enemy_powers"] = enemyPowers,
-            ["next_step"] = "Call get_game_state, then capture target-visible screenshot evidence."
+            ["visible_hand_sync"] = visibleHandSync,
+            ["visible_hand"] = BuildVisibleCardList(visibleHandCards),
+            ["next_step"] = "Call get_game_state and list_visible_cards; only capture evidence after the target card is visible."
         };
+    }
+
+    private static Dictionary<string, object?> RefreshVisibleHand(CombatState combatState)
+    {
+        var result = new Dictionary<string, object?> { ["status"] = "not_available" };
+        var hand = NPlayerHand.Instance;
+        if (hand == null)
+            return result;
+
+        try
+        {
+            typeof(NPlayerHand)
+                .GetMethod("OnCombatStateChanged", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.Invoke(hand, new object[] { combatState });
+            hand.ForceRefreshCardIndices();
+            typeof(NPlayerHand)
+                .GetMethod("RefreshLayout", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.Invoke(hand, null);
+
+            result["status"] = "ok";
+            result["visible_count"] = hand.ActiveHolders.Count;
+        }
+        catch (TargetInvocationException ex)
+        {
+            var inner = ex.InnerException?.GetBaseException() ?? ex.GetBaseException();
+            result["status"] = "error";
+            result["error"] = $"{inner.GetType().Name}: {inner.Message}";
+        }
+        catch (Exception ex)
+        {
+            result["status"] = "error";
+            result["error"] = ex.GetBaseException().Message;
+        }
+
+        return result;
     }
 
     private static void ClearPile(CardPile pile)
