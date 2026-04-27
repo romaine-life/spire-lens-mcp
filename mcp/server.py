@@ -924,34 +924,22 @@ async def replace_run_deck_and_save(
 
 
 @mcp.tool()
-async def configure_test_combat(
-    deck: list[str] | None = None,
-    hand: list[str] | None = None,
-    draw_pile: list[str] | None = None,
-    discard_pile: list[str] | None = None,
-    exhaust_pile: list[str] | None = None,
-    enemy_hp: int = 999,
+async def configure_live_combat(
+    enemy_hp: int | None = None,
     energy: int | None = None,
     stars: int | None = None,
     player_powers: list[dict] | None = None,
     enemy_powers: list[dict] | None = None,
 ) -> str:
-    """Configure the current combat into a deterministic validation fixture.
+    """Configure sparse properties on the current live combat.
 
-    Default validation should use a simple early/debug monster with high HP and
-    controlled card piles. Use `configure_run_deck` before entering combat, then
-    use this after `enter_debug_room("Monster")` to move already-registered
-    combat cards into hand/draw/discard/exhaust. If an issue needs kills, enemy
-    powers/statuses, multiple enemies, or special enemy behavior, the
-    investigation phase should say why the default fixture is insufficient.
+    This tool intentionally does not edit the deck or combat piles. Scenario
+    saves and normal game draw should establish card availability; use this only
+    for properties that are awkward to encode in the save or need a live combat
+    target, such as durable enemy HP, current energy/stars, or powers/statuses.
 
     Args:
-        deck: Deprecated. Configure the deck before combat with `configure_run_deck`.
-        hand: Card ids or exact names to put in hand, left to right.
-        draw_pile: Card ids or exact names to put in draw pile.
-        discard_pile: Card ids or exact names to put in discard pile.
-        exhaust_pile: Card ids or exact names to put in exhaust pile.
-        enemy_hp: HP to set on all living enemies. Defaults to 999.
+        enemy_hp: Optional HP to set on all living enemies.
         energy: Optional exact current player energy.
         stars: Optional exact current Regent stars.
         player_powers: Optional list like [{"power": "Artifact", "amount": 1}].
@@ -959,16 +947,12 @@ async def configure_test_combat(
     """
     try:
         body: dict = {
-            "action": "dev_configure_test_combat",
-            "deck": [],
-            "hand": hand or [],
-            "draw_pile": draw_pile or [],
-            "discard_pile": discard_pile or [],
-            "exhaust_pile": exhaust_pile or [],
-            "enemy_hp": enemy_hp,
+            "action": "dev_configure_live_combat",
             "player_powers": player_powers or [],
             "enemy_powers": enemy_powers or [],
         }
+        if enemy_hp is not None:
+            body["enemy_hp"] = enemy_hp
         if energy is not None:
             body["energy"] = energy
         if stars is not None:

@@ -67,7 +67,7 @@ public static partial class McpMod
             "dev_configure_run_deck" => ExecuteDevConfigureRunDeck(data),
             "dev_replace_run_deck_and_save" => ExecuteDevReplaceRunDeckAndSave(data),
             "dev_enter_room" => ExecuteDevEnterRoom(data),
-            "dev_configure_test_combat" => ExecuteDevConfigureTestCombat(data),
+            "dev_configure_live_combat" => ExecuteDevConfigureLiveCombat(data),
             "dev_set_spirelens_view_stats_enabled" => ExecuteDevSetSpireLensViewStatsEnabled(data),
             "dev_list_visible_cards" => ExecuteDevListVisibleCards(data),
             "dev_show_card_tooltip" => ExecuteDevShowCardTooltip(data),
@@ -514,7 +514,7 @@ public static partial class McpMod
         };
     }
 
-    private static Dictionary<string, object?> ExecuteDevConfigureTestCombat(Dictionary<string, JsonElement> data)
+    private static Dictionary<string, object?> ExecuteDevConfigureLiveCombat(Dictionary<string, JsonElement> data)
     {
         if (!RunManager.Instance.IsInProgress)
             return Error("No run in progress.");
@@ -533,33 +533,9 @@ public static partial class McpMod
         if (combatState == null)
             return Error("Combat state is unavailable.");
 
-        int enemyHp = GetInt(data, "enemy_hp", 999);
-        bool clearHand = GetBool(data, "clear_hand", true);
-        bool clearDraw = GetBool(data, "clear_draw", true);
-        bool clearDiscard = GetBool(data, "clear_discard", true);
-        bool clearExhaust = GetBool(data, "clear_exhaust", true);
-
-        var handCards = GetStringArray(data, "hand");
-        var drawCards = GetStringArray(data, "draw_pile");
-        var discardCards = GetStringArray(data, "discard_pile");
-        var exhaustCards = GetStringArray(data, "exhaust_pile");
-        var deckCards = GetStringArray(data, "deck");
-        if (deckCards.Count > 0)
-            return Error("Deck changes must be applied before combat starts. Use dev_configure_run_deck, then enter combat, then configure combat piles.");
-        var combatCardPool = ExtractCombatCardPool(player.PlayerCombatState);
-        if (clearHand) ClearPile(player.PlayerCombatState.Hand);
-        if (clearDraw) ClearPile(player.PlayerCombatState.DrawPile);
-        if (clearDiscard) ClearPile(player.PlayerCombatState.DiscardPile);
-        if (clearExhaust) ClearPile(player.PlayerCombatState.ExhaustPile);
-
-        var added = new Dictionary<string, object?>
-        {
-            ["deck"] = BuildCardList(player.Deck.Cards),
-            ["hand"] = MoveCardsFromPool(combatCardPool, player.PlayerCombatState.Hand, handCards),
-            ["draw_pile"] = MoveCardsFromPool(combatCardPool, player.PlayerCombatState.DrawPile, drawCards),
-            ["discard_pile"] = MoveCardsFromPool(combatCardPool, player.PlayerCombatState.DiscardPile, discardCards),
-            ["exhaust_pile"] = MoveCardsFromPool(combatCardPool, player.PlayerCombatState.ExhaustPile, exhaustCards)
-        };
+        int? enemyHp = null;
+        if (TryGetNullableInt(data, "enemy_hp", out var requestedEnemyHp))
+            enemyHp = requestedEnemyHp;
 
         if (TryGetNullableInt(data, "energy", out var energy) && energy.HasValue)
             player.PlayerCombatState.Energy = energy.Value;
@@ -570,7 +546,8 @@ public static partial class McpMod
         var livingEnemies = combatState.Enemies.Where(e => e.IsAlive).ToList();
         foreach (var enemy in livingEnemies)
         {
-            SetCreatureHp(enemy, enemyHp);
+            if (enemyHp.HasValue)
+                SetCreatureHp(enemy, enemyHp.Value);
             enemies.Add(new Dictionary<string, object?>
             {
                 ["name"] = SafeGetText(() => enemy.Monster?.Title),
@@ -582,24 +559,18 @@ public static partial class McpMod
 
         var playerPowers = ApplyPowerSpecs(data, "player_powers", [player.Creature]);
         var enemyPowers = ApplyPowerSpecs(data, "enemy_powers", livingEnemies);
-        var visibleHandSync = RefreshVisibleHand(combatState);
-        TryResolveCardHolders("hand", out var visibleHandCards, out _);
 
         return new Dictionary<string, object?>
         {
             ["status"] = "ok",
-            ["message"] = "Configured current combat for deterministic test validation.",
-            ["default_fixture"] = "single durable early/debug monster, high HP, controlled piles",
+            ["message"] = "Configured live combat properties.",
             ["enemy_hp"] = enemyHp,
             ["energy"] = player.PlayerCombatState.Energy,
             ["stars"] = player.PlayerCombatState.Stars,
             ["enemies"] = enemies,
-            ["added"] = added,
             ["player_powers"] = playerPowers,
             ["enemy_powers"] = enemyPowers,
-            ["visible_hand_sync"] = visibleHandSync,
-            ["visible_hand"] = BuildVisibleCardList(visibleHandCards),
-            ["next_step"] = "Call get_game_state and list_visible_cards; only capture evidence after the target card is visible."
+            ["next_step"] = "Use get_game_state to confirm combat properties, then continue with normal gameplay MCP actions."
         };
     }
 
