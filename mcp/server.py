@@ -373,7 +373,8 @@ async def get_validation_capabilities() -> str:
 
     Use this during test planning before writing screenshot or live-validation
     evidence contracts. It describes which card surfaces can be opened, listed,
-    tooltipped, and screenshotted, plus the runtime options automation enables.
+    tooltipped, and screenshotted, plus runtime options, output contracts,
+    common failures, state mutation behavior, and examples for validation tools.
     """
     try:
         return await _catalog_post({"action": "get_validation_capabilities"})

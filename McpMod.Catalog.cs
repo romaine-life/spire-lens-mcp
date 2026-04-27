@@ -96,8 +96,8 @@ public static partial class McpMod
         => new()
         {
             ["status"] = "ok",
-            ["version"] = 1,
-            ["purpose"] = "Cold metadata describing the live-validation surfaces that later agent phases may use.",
+            ["version"] = 2,
+            ["purpose"] = "Cold metadata describing the live-validation surfaces and MCP tools that later agent phases may use.",
             ["runtime_options"] = new Dictionary<string, object?>
             {
                 ["view_stats"] = new Dictionary<string, object?>
@@ -145,7 +145,197 @@ public static partial class McpMod
                 ["preferred_card_availability"] = "Materialize a deterministic scenario save with a small deck of real card ids.",
                 ["base_saves"] = new[] { "base_ironclad", "base_silent", "base_defect", "base_regent", "base_necrobinder" },
                 ["normal_encounter_default"] = "FUZZY_WURM_CRAWLER_WEAK"
-            }
+            },
+            ["tools"] = BuildValidationToolManifest()
+        };
+
+    private static List<Dictionary<string, object?>> BuildValidationToolManifest()
+        => new()
+        {
+            BuildValidationTool(
+                "lookup_card",
+                "catalog",
+                "Resolve a card id, display name, ownership, type, rarity, and ambiguity status from the live STS2 model catalog.",
+                mutatesState: false,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: true,
+                outputContract: "JSON with status ok|not_found|ambiguous, kind=card, match_count, matches[], and card when exactly one match exists.",
+                commonFailures: new[] { "query missing", "not_found", "ambiguous" },
+                examples: new[] { "lookup_card(query=\"Make It So\")", "lookup_card(query=\"MAKE_IT_SO\")" }),
+            BuildValidationTool(
+                "list_cards",
+                "catalog",
+                "List real card ids from the live catalog using owner/type/query filters. Use for support-card selection in scenario decks.",
+                mutatesState: false,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: true,
+                outputContract: "JSON with status ok, filters echoed, count, and cards[] containing id/name/type/rarity/description/owners.",
+                commonFailures: new[] { "overly narrow filter returns too few cards" },
+                examples: new[] { "list_cards(owner=\"REGENT\", type=\"Skill\", limit=20)" }),
+            BuildValidationTool(
+                "lookup_character",
+                "catalog",
+                "Resolve a character id/name and card-pool identity from the live STS2 model catalog.",
+                mutatesState: false,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: true,
+                outputContract: "JSON with status ok|not_found|ambiguous, kind=character, match_count, matches[], and character when exactly one match exists.",
+                commonFailures: new[] { "query missing", "not_found", "ambiguous" },
+                examples: new[] { "lookup_character(query=\"Regent\")" }),
+            BuildValidationTool(
+                "get_validation_capabilities",
+                "catalog",
+                "Return this manifest: available validation surfaces, runtime options, evidence flow, screenshot contract, scenario setup defaults, and per-tool usage metadata.",
+                mutatesState: false,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: true,
+                outputContract: "JSON with status ok, version, runtime_options, card_surfaces, recommended_tooltip_evidence_flow, screenshot_contract, scenario_setup, tools[].",
+                commonFailures: Array.Empty<string>(),
+                examples: new[] { "get_validation_capabilities()" }),
+            BuildValidationTool(
+                "set_spirelens_view_stats_enabled",
+                "runtime_option",
+                "Enable or disable SpireLens card-stat tooltips and optionally turn on verbose in-hand stats for automation screenshots.",
+                mutatesState: true,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok, enabled, verbose_hand_stats.",
+                commonFailures: new[] { "SpireLens loader bridge missing", "game not running" },
+                examples: new[] { "set_spirelens_view_stats_enabled(enabled=true, verbose_hand_stats=true)" }),
+            BuildValidationTool(
+                "list_visible_cards",
+                "ui_evidence",
+                "List card holders currently visible on a tooltip-capable surface so later calls can target by stable card id or index.",
+                mutatesState: false,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok, surface, count, cards[] containing index/card_id/card_name/global_position.",
+                commonFailures: new[] { "surface not open", "player hand unavailable", "empty pile" },
+                examples: new[] { "list_visible_cards(surface=\"hand\")", "list_visible_cards(surface=\"discard_pile\") after open_card_pile(pile=\"discard_pile\")" }),
+            BuildValidationTool(
+                "show_card_tooltip",
+                "ui_evidence",
+                "Force the game to create hover tooltips for a visible card holder, preferably selected by card_id.",
+                mutatesState: true,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok, surface, card_index, card_id, card_name, visible_cards[].",
+                commonFailures: new[] { "target card not visible", "ambiguous duplicate card_id without card_index", "surface not open" },
+                examples: new[] { "show_card_tooltip(surface=\"hand\", card_id=\"MAKE_IT_SO\")", "show_card_tooltip(surface=\"deck\", card_id=\"BASH\")" }),
+            BuildValidationTool(
+                "open_card_pile",
+                "ui_navigation",
+                "Open a real in-game card grid for deck/draw/discard/exhaust pile evidence. Required before list/show calls on those surfaces.",
+                mutatesState: true,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok and surface when the pile view is open.",
+                commonFailures: new[] { "no run in progress", "combat pile requested outside combat", "requested combat pile empty" },
+                examples: new[] { "open_card_pile(pile=\"deck\")", "open_card_pile(pile=\"exhaust_pile\")" }),
+            BuildValidationTool(
+                "close_card_pile",
+                "ui_navigation",
+                "Close the active card pile overlay or deck view opened for MCP inspection.",
+                mutatesState: true,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok when a card pile/deck view was closed.",
+                commonFailures: new[] { "no card pile or deck view is open" },
+                examples: new[] { "close_card_pile()" }),
+            BuildValidationTool(
+                "capture_screenshot",
+                "evidence_capture",
+                "Capture the full STS2 game viewport to a PNG under SCREENSHOT_DIR. This is the canonical screenshot evidence path.",
+                mutatesState: false,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status/metadata, path, dimensions, and no inline PNG payload.",
+                commonFailures: new[] { "game not running", "screenshot directory unavailable", "viewport capture failed" },
+                examples: new[] { "capture_screenshot(name=\"issue78-make-it-so-tooltip.png\")" }),
+            BuildValidationTool(
+                "get_game_state",
+                "state_read",
+                "Read current STS2 state, including state_type, combat hand/piles/enemies, player stats, map/event/reward screens.",
+                mutatesState: false,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "Markdown or JSON. JSON includes state_type and screen-specific state; combat states include hand/draw_pile/discard_pile/exhaust_pile summaries.",
+                commonFailures: new[] { "game not running", "transition/loading state", "unexpected menu state" },
+                examples: new[] { "get_game_state(format=\"json\")" }),
+            BuildValidationTool(
+                "materialize_scenario_save",
+                "scenario_setup",
+                "Create a derived scenario save from a base save by editing stable pre-combat fields such as deck, relics, gold, HP, max energy, and next encounter.",
+                mutatesState: true,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok, base, scenario, before/after summaries, bytes, sha256.",
+                commonFailures: new[] { "base save missing", "unsupported save shape", "invalid card/relic/encounter id" },
+                examples: new[] { "materialize_scenario_save(base_name=\"base_regent\", scenario_name=\"issue_78_make_it_so\", deck=[\"MAKE_IT_SO\",\"DEFEND_REGENT\",\"GATHER_LIGHT\",\"GLOW\"], max_energy=3)" }),
+            BuildValidationTool(
+                "install_save_as_current",
+                "scenario_setup",
+                "Install a managed base/scenario save as STS2 current_run.save, writing both AppData and Steam remote mirrors.",
+                mutatesState: true,
+                requiresGameRunning: false,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok, installed, targets[], target_count, sha256.",
+                commonFailures: new[] { "scenario save missing", "save target path unavailable" },
+                examples: new[] { "install_save_as_current(name=\"issue_78_make_it_so\", kind=\"scenario\")" }),
+            BuildValidationTool(
+                "load_current_run_save",
+                "scenario_setup",
+                "Load STS2 current_run.save through the game's saved-run path after installation and startup.",
+                mutatesState: true,
+                requiresGameRunning: true,
+                requiresCombat: false,
+                safeForPlanning: false,
+                outputContract: "JSON with status ok or loading/error state for the run-load transition.",
+                commonFailures: new[] { "run already in progress", "save validation failure", "called before menu is stable" },
+                examples: new[] { "load_current_run_save()" })
+        };
+
+    private static Dictionary<string, object?> BuildValidationTool(
+        string name,
+        string category,
+        string description,
+        bool mutatesState,
+        bool requiresGameRunning,
+        bool requiresCombat,
+        bool safeForPlanning,
+        string outputContract,
+        IReadOnlyList<string> commonFailures,
+        IReadOnlyList<string> examples)
+        => new()
+        {
+            ["name"] = name,
+            ["category"] = category,
+            ["description"] = description,
+            ["phase_guidance"] = new Dictionary<string, object?>
+            {
+                ["safe_for_test_planning"] = safeForPlanning,
+                ["safe_for_verification"] = true,
+                ["implementation_should_use"] = category == "catalog"
+            },
+            ["mutates_state"] = mutatesState,
+            ["requires_game_running"] = requiresGameRunning,
+            ["requires_combat"] = requiresCombat,
+            ["output_contract"] = outputContract,
+            ["common_failures"] = commonFailures,
+            ["examples"] = examples
         };
 
     private static Dictionary<string, object?> BuildValidationSurface(
