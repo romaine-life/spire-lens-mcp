@@ -128,6 +128,31 @@ def _base_save_dir() -> Path:
     return _user_data_dir() / "SpireLensMcp" / "base_saves"
 
 
+def _bundled_base_save_dir() -> Path:
+    """Base saves committed alongside the spire-lens-mcp package itself.
+
+    Used as a last-resort fallback so a fresh runner that's never had
+    SpireLensMcp populate its AppData base_saves can still materialize
+    scenarios. The user-managed location (AppData or STS2_BASE_SAVE_DIR
+    override) still wins when present, so locally-captured saves stay
+    authoritative."""
+    return Path(__file__).resolve().parent / "base_saves"
+
+
+def _resolve_base_save_path(name: str) -> Path:
+    """Find a base save by name, preferring the user-managed location and
+    falling back to the bundled copy. Returns the user-managed path even
+    when neither exists, so the downstream FileNotFoundError points at the
+    location callers expect to populate."""
+    user_path = _named_save_path(_base_save_dir(), name)
+    if user_path.exists():
+        return user_path
+    bundled = _named_save_path(_bundled_base_save_dir(), name)
+    if bundled.exists():
+        return bundled
+    return user_path
+
+
 def _scenario_save_dir() -> Path:
     configured = os.environ.get("STS2_SCENARIO_SAVE_DIR")
     if configured and configured.strip():
@@ -733,18 +758,31 @@ async def list_save_files(kind: str = "base") -> str:
         kind: "base" for reusable character bases or "scenario" for derived test saves.
     """
     try:
-        root = _base_save_dir() if kind == "base" else _scenario_save_dir()
+        if kind == "base":
+            user_root = _base_save_dir()
+            bundled_root = _bundled_base_save_dir()
+            roots: list[tuple[Path, str]] = [(user_root, "user"), (bundled_root, "bundled")]
+        else:
+            user_root = _scenario_save_dir()
+            roots = [(user_root, "user")]
+        seen: set[str] = set()
         saves = []
-        if root.exists():
+        for root, source in roots:
+            if not root.exists():
+                continue
             for path in sorted(root.glob("*.save"), key=lambda p: p.name.lower()):
+                if path.stem in seen:
+                    continue
+                seen.add(path.stem)
                 saves.append({
                     "name": path.stem,
                     "path": str(path),
+                    "source": source,
                     "bytes": path.stat().st_size,
                     "sha256": _sha256(path),
                     "updated_at": path.stat().st_mtime,
                 })
-        return json.dumps({"status": "ok", "kind": kind, "directory": str(root), "count": len(saves), "saves": saves}, indent=2)
+        return json.dumps({"status": "ok", "kind": kind, "directory": str(user_root), "count": len(saves), "saves": saves}, indent=2)
     except Exception as e:
         return _handle_error(e)
 
@@ -758,8 +796,7 @@ async def inspect_save(name: str, kind: str = "base") -> str:
         kind: "base" or "scenario".
     """
     try:
-        root = _base_save_dir() if kind == "base" else _scenario_save_dir()
-        path = _named_save_path(root, name)
+        path = _resolve_base_save_path(name) if kind == "base" else _named_save_path(_scenario_save_dir(), name)
         data = _load_save_json(path)
         return json.dumps({
             "status": "ok",
@@ -818,7 +855,7 @@ async def materialize_scenario_save(
             placeholders and poison screenshot evidence.
     """
     try:
-        base_path = _named_save_path(_base_save_dir(), base_name)
+        base_path = _resolve_base_save_path(base_name)
         output_path = _named_save_path(_scenario_save_dir(), scenario_name)
         data = _load_save_json(base_path)
         edited = copy.deepcopy(data)
@@ -936,8 +973,7 @@ async def install_save_as_current(name: str, kind: str = "scenario") -> str:
         kind: "scenario" or "base".
     """
     try:
-        source_root = _base_save_dir() if kind == "base" else _scenario_save_dir()
-        source = _named_save_path(source_root, name)
+        source = _resolve_base_save_path(name) if kind == "base" else _named_save_path(_scenario_save_dir(), name)
         if not source.exists():
             raise FileNotFoundError(source)
 
