@@ -314,8 +314,18 @@ def _iter_save_strings(value) -> list[str]:
 
 
 def _known_save_encounter_ids() -> list[str]:
+    """Enumerate ENCOUNTER.* ids that appear anywhere in the available save
+    files. This is the python-side fallback path for list_encounters /
+    lookup_encounter when the C# catalog returns zero entries.
+
+    Scans both user-managed locations (STS2_BASE_SAVE_DIR override / AppData
+    + scenario_saves) AND the bundled base saves shipped with the package —
+    matching the lookup chain in _resolve_base_save_path. Without the bundled
+    fallback, a fresh runner that's never had AppData populated would see an
+    empty encounter list, and the validator would reject every encounter id
+    the test-plan LLM tried to use."""
     ids: set[str] = set()
-    for root in (_base_save_dir(), _scenario_save_dir()):
+    for root in (_base_save_dir(), _bundled_base_save_dir(), _scenario_save_dir()):
         if not root.exists():
             continue
         for path in root.glob("*.save"):
@@ -847,8 +857,10 @@ async def materialize_scenario_save(
         current_hp: Optional exact current HP.
         max_hp: Optional exact max HP.
         max_energy: Optional exact max energy.
-        next_normal_encounter: Optional encounter id to place at the next normal
-            encounter slot, e.g. FUZZY_WURM_CRAWLER_WEAK.
+        next_normal_encounter: Optional encounter id to place at the next
+            normal encounter slot. Discover valid ids via list_encounters
+            (the validator rejects unknown ids). Omit (None) when the
+            scenario does not depend on which encounter is fought first.
         validate_ids: When true, resolve every supplied card/relic/encounter id
             against the live STS2 catalog before writing the save. This is the
             default because invalid ids can deserialize as Deprecated Card

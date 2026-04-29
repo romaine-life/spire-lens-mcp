@@ -165,7 +165,16 @@ public static partial class McpMod
                 ["preferred_card_availability"] = "Materialize a deterministic scenario save with a small deck of real card ids.",
                 ["preferred_relic_availability"] = "Materialize relic scenarios with the relics/add_relics save fields using real relic ids from lookup_relic/list_relics.",
                 ["base_saves"] = new[] { "base_ironclad", "base_silent", "base_defect", "base_regent", "base_necrobinder" },
-                ["normal_encounter_default"] = "FUZZY_WURM_CRAWLER_WEAK"
+                // No hardcoded encounter default. Capabilities used to advertise
+                // FUZZY_WURM_CRAWLER_WEAK as the normal_encounter_default, which
+                // led the test-plan LLM to pass that id verbatim into
+                // materialize_scenario_save — and the validator rejected it
+                // whenever the catalog's enumeration came back empty (see
+                // spirelens#162 verify failure on run 25130564171). Force the
+                // caller to discover a real encounter via list_encounters /
+                // lookup_encounter, OR to omit next_normal_encounter entirely
+                // when the scenario does not depend on encounter type.
+                ["next_normal_encounter_guidance"] = "Optional. Use list_encounters(room_type=\"Monster\") to discover real encounter ids; pass one of the returned ids verbatim. Omit (null) when the relic/card stat being tested does not depend on which encounter is fought (e.g. start-of-combat triggers that fire regardless of opponent)."
             },
             ["tools"] = BuildValidationToolManifest()
         };
@@ -227,7 +236,7 @@ public static partial class McpMod
                 safeForPlanning: true,
                 outputContract: "JSON with status ok|not_found|ambiguous, kind=encounter, match_count, matches[], and encounter when exactly one match exists.",
                 commonFailures: new[] { "query missing", "not_found", "ambiguous" },
-                examples: new[] { "lookup_encounter(query=\"FUZZY_WURM_CRAWLER_WEAK\")" }),
+                examples: new[] { "lookup_encounter(query=\"<encounter id discovered via list_encounters>\")" }),
             BuildValidationTool(
                 "list_encounters",
                 "catalog",
