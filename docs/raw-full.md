@@ -1,6 +1,6 @@
 # Full API Reference
 
-HTTP API served by the SpireLensMcp mod on `localhost:15526`. No authentication. Local use only.
+HTTP API served by the SpireLensMcpBridge mod on `localhost:15526`. No authentication. Local use only.
 
 **Endpoints:**
 - `GET  /api/v1/singleplayer` — read current game state

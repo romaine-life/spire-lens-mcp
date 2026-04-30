@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-    Builds the SpireLensMcp mod DLL.
+    Builds the SpireLensMcpBridge mod DLL.
 
 .DESCRIPTION
-    Compiles SpireLensMcp.dll against the game's assemblies. Does NOT install
-    the mod — copy the output files to the game's mods/ directory yourself.
+    Compiles SpireLensMcpBridge.dll against the game's assemblies. Does NOT
+    install the mod — copy the output files to the game's mods/ directory
+    yourself.
 
 .PARAMETER GameDir
     Path to the Slay the Spire 2 installation directory.
@@ -62,10 +63,10 @@ Install the .NET 9 SDK from:
 
 # --- Build ---
 $scriptDir = $PSScriptRoot
-$project = Join-Path $scriptDir "SpireLensMcp.csproj"
-$outDir = Join-Path (Join-Path $scriptDir "out") "SpireLensMcp"
+$project = Join-Path $scriptDir "SpireLensMcpBridge.csproj"
+$outDir = Join-Path (Join-Path $scriptDir "out") "SpireLensMcpBridge"
 
-Write-Host "=== Building SpireLensMcp ($Configuration) ===" -ForegroundColor Cyan
+Write-Host "=== Building SpireLensMcpBridge ($Configuration) ===" -ForegroundColor Cyan
 Write-Host "Game directory : $GameDir"
 Write-Host "Output         : $outDir"
 Write-Host ""
@@ -76,5 +77,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
 Write-Host "=== Build succeeded ===" -ForegroundColor Green
 Write-Host "To install, copy these files to <game_install>/mods/:"
-Write-Host "  $outDir\SpireLensMcp.dll"
-Write-Host "  $scriptDir\mod_manifest.json  ->  mods\SpireLensMcp.json"
+Write-Host "  $outDir\SpireLensMcpBridge.dll"
+Write-Host "  $scriptDir\mod_manifest.json  ->  mods\SpireLensMcpBridge.json"

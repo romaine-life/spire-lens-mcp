@@ -6,7 +6,7 @@ Vendored from [`Gennadiyev/STS2MCP`](https://github.com/Gennadiyev/STS2MCP) v0.3
 
 ## Components
 
-- **C# mod** (`McpMod.*.cs`, [`SpireLensMcp.csproj`](SpireLensMcp.csproj)) — built into `SpireLensMcp.dll`, copied to `<game_install>/mods/`. Opens an `HttpListener` on `localhost:15526` and dispatches to handlers for game-state queries and action commands.
+- **C# mod** (`McpMod.*.cs`, [`SpireLensMcpBridge.csproj`](SpireLensMcpBridge.csproj)) — built into `SpireLensMcpBridge.dll`, copied to `<game_install>/mods/`. Opens an `HttpListener` on `localhost:15526` and dispatches to handlers for game-state queries and action commands.
 - **Python MCP server** (`mcp/server.py`) — stdio MCP server that connects to the in-game listener and exposes ~50 tools (`combat_play_card`, `relic_select`, `get_game_state`, etc.). Used by Claude Code via the consuming repo's `.mcp.json`.
 
 ## Build
@@ -20,14 +20,14 @@ $env:STS2_GAME_DIR = "D:\SteamLibrary\steamapps\common\Slay the Spire 2"
 .\build.ps1
 ```
 
-Outputs `out/SpireLensMcp/SpireLensMcp.dll`. Install:
+Outputs `out/SpireLensMcpBridge/SpireLensMcpBridge.dll`. Install:
 
 ```
-out/SpireLensMcp/SpireLensMcp.dll  ->  <game_install>/mods/SpireLensMcp/SpireLensMcp.dll
-mod_manifest.json                  ->  <game_install>/mods/SpireLensMcp/SpireLensMcp.json
+out/SpireLensMcpBridge/SpireLensMcpBridge.dll  ->  <game_install>/mods/SpireLensMcpBridge/SpireLensMcpBridge.dll
+mod_manifest.json                              ->  <game_install>/mods/SpireLensMcpBridge/SpireLensMcpBridge.json
 ```
 
-(The mod loader expects a folder named after the mod ID with the manifest renamed to `<id>.json`.)
+(The mod loader expects a folder named after the mod ID with the manifest renamed to `<id>.json`. The mod ID is `SpireLensMcpBridge` per `mod_manifest.json`.)
 
 ## Verify
 
