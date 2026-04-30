@@ -1,6 +1,6 @@
 """MCP server bridge for Slay the Spire 2.
 
-Connects to the SpireLensMcp mod's HTTP server and exposes game actions
+Connects to the SpireLensMcpBridge in-game HTTP bridge and exposes game actions
 as MCP tools for Claude Desktop / Claude Code.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("sts2")
+mcp = FastMCP("spire-lens-mcp")
 
 _base_url: str = "http://localhost:15526"
 _trust_env: bool = True
@@ -565,7 +565,7 @@ def _save_viewport_png(output_path: Path, metadata: dict) -> dict:
 
 def _handle_error(e: Exception) -> str:
     if isinstance(e, httpx.ConnectError):
-        return "Error: Cannot connect to SpireLensMcp mod. Is the game running with the mod enabled?"
+        return "Error: Cannot connect to SpireLensMcpBridge at localhost:15526. Is STS2 running with the bridge mod enabled?"
     if isinstance(e, httpx.HTTPStatusError):
         return f"Error: HTTP {e.response.status_code} — {e.response.text}"
     return f"Error: {e}"
@@ -2248,7 +2248,7 @@ async def mp_crystal_sphere_proceed() -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SpireLens MCP Server")
+    parser = argparse.ArgumentParser(description="spire-lens-mcp server")
     parser.add_argument("--port", type=int, default=15526, help="Game HTTP server port")
     parser.add_argument("--host", type=str, default="localhost", help="Game HTTP server host")
     parser.add_argument("--no-trust-env", action="store_true", help="Ignore HTTP_PROXY/HTTPS_PROXY environment variables")

@@ -21,7 +21,7 @@ public static partial class McpMod
 {
     public const string Version = "0.3.4";
     public const int DefaultPort = 15526;
-    private const string ConfigFileName = "SpireLensMcp.conf";
+    private const string ConfigFileName = "SpireLensMcpBridge.conf";
 
     private static HttpListener? _listener;
     private static Thread? _serverThread;
@@ -49,7 +49,7 @@ public static partial class McpMod
                 var defaultConfig = new Dictionary<string, object> { ["port"] = DefaultPort };
                 string json = JsonSerializer.Serialize(defaultConfig, _jsonOptions);
                 File.WriteAllText(configPath, json);
-                GD.Print($"[SpireLens MCP] Created default config at {configPath}");
+                GD.Print($"[SpireLensMcpBridge] Created default config at {configPath}");
                 return DefaultPort;
             }
 
@@ -62,12 +62,12 @@ public static partial class McpMod
                 return port;
             }
 
-            GD.PrintErr($"[SpireLens MCP] Invalid or missing 'port' in {configPath}, using default {DefaultPort}");
+            GD.PrintErr($"[SpireLensMcpBridge] Invalid or missing 'port' in {configPath}, using default {DefaultPort}");
             return DefaultPort;
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SpireLens MCP] Failed to load config: {ex.Message}, using default port {DefaultPort}");
+            GD.PrintErr($"[SpireLensMcpBridge] Failed to load config: {ex.Message}, using default port {DefaultPort}");
             return DefaultPort;
         }
     }
@@ -93,15 +93,15 @@ public static partial class McpMod
             _serverThread = new Thread(ServerLoop)
             {
                 IsBackground = true,
-                Name = "SpireLensMcp_Server"
+                Name = "SpireLensMcpBridge_Server"
             };
             _serverThread.Start();
 
-            GD.Print($"[SpireLens MCP] v{Version} server started on http://localhost:{port}/");
+            GD.Print($"[SpireLensMcpBridge] v{Version} server started on http://localhost:{port}/");
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SpireLens MCP] Failed to start: {ex}");
+            GD.PrintErr($"[SpireLensMcpBridge] Failed to start: {ex}");
         }
     }
 
@@ -114,7 +114,7 @@ public static partial class McpMod
         catch (Exception ex)
         {
             GD.PrintErr(
-                $"[SpireLens MCP] Harmony patches unavailable; continuing without optional UI injection: {ex}");
+                $"[SpireLensMcpBridge] Harmony patches unavailable; continuing without optional UI injection: {ex}");
         }
     }
 
@@ -124,7 +124,7 @@ public static partial class McpMod
         while (_mainThreadQueue.TryDequeue(out var action) && processed < 10)
         {
             try { action(); }
-            catch (Exception ex) { GD.PrintErr($"[SpireLens MCP] Main thread action error: {ex}"); }
+            catch (Exception ex) { GD.PrintErr($"[SpireLensMcpBridge] Main thread action error: {ex}"); }
             processed++;
         }
     }
@@ -187,7 +187,7 @@ public static partial class McpMod
 
             if (path == "/")
             {
-                SendJson(response, new { message = $"Hello from SpireLens MCP v{Version}", status = "ok" });
+                SendJson(response, new { message = $"Hello from SpireLensMcpBridge v{Version}", status = "ok" });
             }
             else if (path == "/api/v1/singleplayer")
             {
@@ -289,7 +289,7 @@ public static partial class McpMod
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SpireLens MCP] HandleGetMultiplayerState: {ex}");
+            GD.PrintErr($"[SpireLensMcpBridge] HandleGetMultiplayerState: {ex}");
             try
             {
                 response.StatusCode = 500;
@@ -358,7 +358,7 @@ public static partial class McpMod
                 }
                 catch (Exception ex)
                 {
-                    GD.PrintErr($"[SpireLens MCP] FormatAsMarkdown failed, returning JSON: {ex}");
+                    GD.PrintErr($"[SpireLensMcpBridge] FormatAsMarkdown failed, returning JSON: {ex}");
                     SendJson(response, state);
                 }
             }
@@ -369,7 +369,7 @@ public static partial class McpMod
         }
         catch (Exception ex)
         {
-            GD.PrintErr($"[SpireLens MCP] HandleGetState: {ex}");
+            GD.PrintErr($"[SpireLensMcpBridge] HandleGetState: {ex}");
             try
             {
                 response.StatusCode = 500;
