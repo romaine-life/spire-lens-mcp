@@ -29,6 +29,8 @@ mod_manifest.json                              ->  <game_install>/mods/SpireLens
 
 (The mod loader expects a folder named after the mod ID with the manifest renamed to `<id>.json`. The mod ID is `SpireLensMcpBridge` per `mod_manifest.json`.)
 
+> **Build breaking after an STS2 update?** The game ships roughly every two weeks and routinely renames or removes the C# game symbols this bridge compiles and reflects against. Before re-diagnosing from scratch, read [**Surviving STS2 updates**](https://github.com/nelsong6/spirelens/blob/main/docs/surviving-sts2-updates.md) in the SpireLens repo — it catalogs the recurring failure modes (build drift, BaseLib desync / frozen HUD, debug-load HUD desync) with concrete symptom → cause → fix.
+
 ## Verify
 
 With the game running:
