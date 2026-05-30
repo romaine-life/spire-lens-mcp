@@ -106,11 +106,26 @@ Point the remote client's `.mcp.json` at it:
 }
 ```
 
-Access control is the network layer: bind to the Tailscale interface and rely on
-tailnet ACLs against `tag:spirelens-host`. For defense in depth, set a shared
-secret with `--auth-token <token>` (or `$SPIRELENS_MCP_TOKEN`); clients must then
-send `Authorization: Bearer <token>` — add `"headers": {"Authorization": "Bearer <token>"}`
-to the `.mcp.json` entry.
+Access control is layered. Pick a mode with `--auth-mode` (default: `token` when
+`--auth-token` / `$SPIRELENS_MCP_TOKEN` is set, otherwise `none`):
+
+- **`none`** — rely on the network layer alone: bind to the Tailscale interface
+  and let tailnet ACLs against `tag:spirelens-host` gate access.
+- **`token`** — shared-secret gate. Set `--auth-token <token>` (or
+  `$SPIRELENS_MCP_TOKEN`); clients send `Authorization: Bearer <token>` — add
+  `"headers": {"Authorization": "Bearer <token>"}` to the `.mcp.json` entry.
+- **`jwt`** — validate an [`auth.romaine.life`](https://auth.romaine.life) RS256
+  service token against its JWKS. **This is the mode the SpireLens deployment
+  uses:** a tank/glimmung session pod presents its projected `auth.romaine.life`
+  token, so **no shared secret is distributed**. The token is checked for
+  signature (via JWKS), issuer, expiry, and `role` (default `service`); an
+  optional `--auth-allowed-actor-emails` CSV restricts which human owners may
+  drive the host. Defaults (each also reads a `SPIRELENS_MCP_AUTH_*` env var):
+  `--auth-jwks-url https://auth.romaine.life/api/auth/jwks`,
+  `--auth-issuer https://auth.romaine.life`, `--auth-required-role service`.
+  Clients do **not** put the token in `.mcp.json`; the in-cluster MCP auth proxy
+  injects the `Authorization` header on the pod's behalf (see the SpireLens /
+  tank-operator tailnet-host-access docs).
 
 ## License
 

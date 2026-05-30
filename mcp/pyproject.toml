@@ -10,7 +10,15 @@ dependencies = [
     # transitively by mcp, but server.py imports them by name, so declare them.
     "starlette>=0.37.0",
     "uvicorn>=0.30.0",
+    # --auth-mode jwt validates auth.romaine.life RS256 service tokens against
+    # its JWKS; the [crypto] extra pulls in `cryptography` for RS256 verification.
+    "pyjwt[crypto]>=2.8.0",
 ]
 
 [project.scripts]
 sts2-mcp = "server:main"
+
+[dependency-groups]
+# Dev-only: unit tests for the --auth-mode jwt path. Run via
+# `uv run --group dev pytest`.
+dev = ["pytest>=8.0.0"]

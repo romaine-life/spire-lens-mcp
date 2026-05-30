@@ -2247,7 +2247,95 @@ async def mp_crystal_sphere_proceed() -> str:
         return _handle_error(e)
 
 
-def _run_http(bind_host: str, bind_port: int, auth_token: str | None) -> None:
+class _AuthError(Exception):
+    """A bearer credential failed validation (bad/missing token, role, or email)."""
+
+
+def _verify_bearer_jwt(
+    token: str,
+    signing_key,
+    *,
+    issuer: str,
+    required_role: str | None,
+    allowed_actor_emails: set[str] | None,
+) -> dict:
+    """Validate an auth.romaine.life RS256 service JWT and return its claims.
+
+    Pure and network-free: the caller resolves ``signing_key`` from the JWKS so
+    this can be unit-tested without a live JWKS endpoint. Raises a ``jwt`` error
+    (bad signature/issuer/expiry) or ``_AuthError`` (role/actor_email) on failure.
+    """
+    import jwt
+
+    claims = jwt.decode(
+        token,
+        signing_key,
+        algorithms=["RS256"],
+        issuer=issuer,
+        leeway=60,
+        # The role=service token's audience is service-specific; authorize on
+        # issuer + role + (optional) actor_email rather than a pinned audience,
+        # matching how tank-operator validates the same token.
+        options={"verify_aud": False, "require": ["exp", "iss"]},
+    )
+    if required_role and claims.get("role") != required_role:
+        raise _AuthError("unexpected role claim")
+    if allowed_actor_emails and claims.get("actor_email") not in allowed_actor_emails:
+        raise _AuthError("actor_email not allowed")
+    return claims
+
+
+class _JwtVerifier:
+    """Validates bearer tokens against a JWKS, caching signing keys.
+
+    Wraps :func:`_verify_bearer_jwt` with PyJWT's ``PyJWKClient``, which fetches
+    and caches the JWKS and selects the signing key by the token's ``kid``.
+    """
+
+    def __init__(
+        self,
+        *,
+        jwks_url: str,
+        issuer: str,
+        required_role: str | None,
+        allowed_actor_emails: set[str] | None,
+    ) -> None:
+        from jwt import PyJWKClient
+
+        self._jwks_client = PyJWKClient(jwks_url)
+        self._issuer = issuer
+        self._required_role = required_role
+        self._allowed_actor_emails = allowed_actor_emails
+
+    def verify_authorization_header(self, authorization: str) -> dict:
+        """Validate an ``Authorization: Bearer <jwt>`` header value; raise on failure."""
+        if not authorization.startswith("Bearer "):
+            raise _AuthError("missing bearer token")
+        token = authorization[len("Bearer ") :].strip()
+        try:
+            signing_key = self._jwks_client.get_signing_key_from_jwt(token).key
+        except Exception as exc:  # noqa: BLE001 - any JWKS failure is unauthorized
+            raise _AuthError(f"jwks lookup failed: {exc.__class__.__name__}") from exc
+        return _verify_bearer_jwt(
+            token,
+            signing_key,
+            issuer=self._issuer,
+            required_role=self._required_role,
+            allowed_actor_emails=self._allowed_actor_emails,
+        )
+
+
+def _run_http(
+    bind_host: str,
+    bind_port: int,
+    *,
+    auth_mode: str,
+    auth_token: str | None,
+    jwks_url: str,
+    issuer: str,
+    required_role: str | None,
+    allowed_actor_emails: set[str] | None,
+) -> None:
     """Serve the MCP tools over Streamable HTTP at /mcp.
 
     Lets a remote client (a tank/glimmung session pod on the tailnet) connect
@@ -2256,29 +2344,61 @@ def _run_http(bind_host: str, bind_port: int, auth_token: str | None) -> None:
     http://<host-tailscale-ip>:<bind_port>/mcp. The server still talks to the
     in-game bridge over the local _base_url, so it survives game restarts and
     reconnects on its own.
+
+    ``auth_mode`` selects the gate:
+      - "none": access control delegated to the network layer (tailnet ACLs).
+      - "token": shared-secret Bearer match (``auth_token``).
+      - "jwt": validate an auth.romaine.life RS256 service token against its
+        JWKS. This is the mode the SpireLens deployment uses -- the credential
+        is the calling pod's projected auth.romaine.life token, so no shared
+        secret is distributed.
     """
     mcp.settings.host = bind_host
     mcp.settings.port = bind_port
 
-    if not auth_token:
+    if auth_mode == "none":
         # Transport-only switch; access control delegated to the network layer
         # (bind to a Tailscale interface + tailnet ACLs on tag:spirelens-host).
         mcp.run(transport="streamable-http")
         return
 
-    # Optional shared-secret gate for defense in depth even on a trusted tailnet.
     import uvicorn
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
 
     app = mcp.streamable_http_app()
 
-    async def _require_token(request, call_next):
-        if request.headers.get("authorization", "") != f"Bearer {auth_token}":
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        return await call_next(request)
+    if auth_mode == "token":
 
-    app.add_middleware(BaseHTTPMiddleware, dispatch=_require_token)
+        async def _dispatch(request, call_next):
+            if request.headers.get("authorization", "") != f"Bearer {auth_token}":
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    elif auth_mode == "jwt":
+        verifier = _JwtVerifier(
+            jwks_url=jwks_url,
+            issuer=issuer,
+            required_role=required_role,
+            allowed_actor_emails=allowed_actor_emails,
+        )
+
+        async def _dispatch(request, call_next):
+            try:
+                verifier.verify_authorization_header(
+                    request.headers.get("authorization", "")
+                )
+            except Exception as exc:  # noqa: BLE001 - any failure is a 401
+                return JSONResponse(
+                    {"error": "unauthorized", "detail": exc.__class__.__name__},
+                    status_code=401,
+                )
+            return await call_next(request)
+
+    else:
+        raise ValueError(f"unknown auth mode: {auth_mode!r}")
+
+    app.add_middleware(BaseHTTPMiddleware, dispatch=_dispatch)
     uvicorn.run(app, host=bind_host, port=bind_port)
 
 
@@ -2314,16 +2434,70 @@ def main():
         help="[--transport http] optional shared secret; clients must send 'Authorization: Bearer <token>'. "
         "Defaults to $SPIRELENS_MCP_TOKEN.",
     )
+    parser.add_argument(
+        "--auth-mode",
+        choices=["none", "token", "jwt"],
+        default=os.environ.get("SPIRELENS_MCP_AUTH_MODE"),
+        help="[--transport http] how to gate requests. 'none': network/tailnet ACLs only. "
+        "'token': shared-secret Bearer (--auth-token). 'jwt': validate an auth.romaine.life "
+        "service token against its JWKS (what tank/glimmung session pods present). Defaults to "
+        "$SPIRELENS_MCP_AUTH_MODE, else 'token' when --auth-token is set, else 'none'.",
+    )
+    parser.add_argument(
+        "--auth-jwks-url",
+        default=os.environ.get(
+            "SPIRELENS_MCP_AUTH_JWKS_URL", "https://auth.romaine.life/api/auth/jwks"
+        ),
+        help="[--auth-mode jwt] JWKS URL used to verify token signatures.",
+    )
+    parser.add_argument(
+        "--auth-issuer",
+        default=os.environ.get("SPIRELENS_MCP_AUTH_ISSUER", "https://auth.romaine.life"),
+        help="[--auth-mode jwt] required 'iss' claim.",
+    )
+    parser.add_argument(
+        "--auth-required-role",
+        default=os.environ.get("SPIRELENS_MCP_AUTH_ROLE", "service"),
+        help="[--auth-mode jwt] required 'role' claim; pass an empty string to skip the role check.",
+    )
+    parser.add_argument(
+        "--auth-allowed-actor-emails",
+        default=os.environ.get("SPIRELENS_MCP_AUTH_ALLOWED_EMAILS"),
+        help="[--auth-mode jwt] optional comma-separated allowlist of 'actor_email' claims; "
+        "when unset, any valid service token is accepted.",
+    )
     args = parser.parse_args()
 
     global _base_url, _trust_env
     _base_url = f"http://{args.host}:{args.port}"
     _trust_env = not args.no_trust_env
 
-    if args.transport == "http":
-        _run_http(args.bind_host, args.bind_port, args.auth_token)
-    else:
+    if args.transport != "http":
         mcp.run(transport="stdio")
+        return
+
+    auth_mode = args.auth_mode
+    if auth_mode is None:
+        auth_mode = "token" if args.auth_token else "none"
+    if auth_mode == "token" and not args.auth_token:
+        parser.error("--auth-mode token requires --auth-token (or $SPIRELENS_MCP_TOKEN)")
+
+    allowed_actor_emails = None
+    if args.auth_allowed_actor_emails:
+        allowed_actor_emails = {
+            e.strip() for e in args.auth_allowed_actor_emails.split(",") if e.strip()
+        }
+
+    _run_http(
+        args.bind_host,
+        args.bind_port,
+        auth_mode=auth_mode,
+        auth_token=args.auth_token,
+        jwks_url=args.auth_jwks_url,
+        issuer=args.auth_issuer,
+        required_role=(args.auth_required_role or None),
+        allowed_actor_emails=allowed_actor_emails,
+    )
 
 
 if __name__ == "__main__":
