@@ -2356,6 +2356,20 @@ def _run_http(
     mcp.settings.host = bind_host
     mcp.settings.port = bind_port
 
+    # The MCP SDK turns on DNS-rebinding protection for any non-loopback bind and,
+    # without an allowed_hosts list, 421s every request whose Host header is the
+    # bind IP/name — i.e. it rejects the remote clients this transport exists to
+    # serve. That protection targets browser-driven attacks on localhost servers;
+    # it does not fit a tailnet-bound endpoint reached by a non-browser MCP client
+    # and gated by tailnet ACLs + (in jwt mode) the auth.romaine.life bearer. Those
+    # are the real security boundary here, so disable the Host check rather than
+    # enumerate every IP/MagicDNS Host form a tailnet caller might use.
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    )
+
     if auth_mode == "none":
         # Transport-only switch; access control delegated to the network layer
         # (bind to a Tailscale interface + tailnet ACLs on tag:spirelens-host).
