@@ -707,6 +707,88 @@ def _lookup_result(kind: str, query: str, matches: list[dict]) -> dict:
     return result
 
 
+def _is_exact_catalog_hit(match: dict, query: str, prefix: str | None) -> bool:
+    """True when ``match`` is an exact id-or-display-name hit for ``query``.
+
+    Exactness here is case-insensitive but punctuation-sensitive, so the query
+    ``'Happy Flower'`` hits the relic named ``'Happy Flower'`` but NOT the event
+    relic ``'Happy Flower???'``. (The C# catalog cannot make this distinction:
+    its NormalizeCatalogKey strips non-alphanumerics, collapsing both names to
+    ``happyflower`` -- which is exactly why the raw matches[] returned to this
+    layer are needed to disambiguate precisely.) Both the raw query and its
+    prefix-stripped form count as id candidates so ``'RELIC.HAPPY_FLOWER'`` and
+    ``'HAPPY_FLOWER'`` resolve identically.
+    """
+    raw = (query or "").strip()
+    if not raw:
+        return False
+    id_candidates = {raw.upper()}
+    if prefix is not None:
+        id_candidates.add(_catalog_query_id(raw, prefix).upper())
+    match_id = str(match.get("id") or "").strip().upper()
+    if match_id:
+        if match_id in id_candidates:
+            return True
+        # Tolerate a prefixed catalog id (RELIC.X) being hit by a bare query (X).
+        if prefix is not None and match_id.startswith(f"{prefix.upper()}."):
+            if match_id.split(".", 1)[1] in id_candidates:
+                return True
+    match_name = str(match.get("name") or "").strip()
+    if match_name and match_name.casefold() == raw.casefold():
+        return True
+    return False
+
+
+def _collapse_exact_catalog_match(data: dict, kind: str, query: str, prefix: str | None) -> dict:
+    """Collapse a substring-ambiguous catalog lookup to a single ``ok`` result
+    when exactly one match exactly hits the query by id or display name.
+
+    The live STS2 model catalog matches ids/names by substring (MatchCatalogObjects
+    keeps every score>0 candidate, then MakeLookupResult sets the status purely by
+    count), so a query that is itself an exact id/name but also a substring of
+    another entry comes back ``ambiguous`` -- e.g. relic id ``HAPPY_FLOWER`` is a
+    substring of ``FAKE_HAPPY_FLOWER``, so ``lookup_relic('HAPPY_FLOWER')`` returns
+    both and the test-plan agent aborts (scenario_setup never gets written, and
+    prepare-scenario.ps1 then refuses the whole verification phase).
+
+    An exact hit is not actually ambiguous; the fuzzy co-matches only matter when
+    no exact hit exists. This mirrors the exact-id disambiguation that
+    ``_lookup_catalog_unique`` already applies on the scenario-validation path,
+    widened to also accept an exact display-name hit because issues routinely name
+    the target by its display name rather than its id.
+    """
+    if not isinstance(data, dict) or data.get("status") != "ambiguous":
+        return data
+    matches = data.get("matches")
+    if not isinstance(matches, list):
+        return data
+    exact = [m for m in matches if isinstance(m, dict) and _is_exact_catalog_hit(m, query, prefix)]
+    if len(exact) != 1:
+        return data
+    collapsed = dict(data)
+    collapsed["status"] = "ok"
+    collapsed["match_count"] = 1
+    collapsed["matches"] = exact
+    collapsed[kind] = exact[0]
+    collapsed["disambiguated_by"] = "exact_match"
+    collapsed.pop("error", None)
+    return collapsed
+
+
+async def _catalog_lookup_passthrough(body: dict, kind: str, query: str, prefix: str | None) -> str:
+    """POST a catalog lookup action and collapse false substring-ambiguity to a
+    single exact hit before handing the JSON back to the caller. Falls back to the
+    raw response untouched if it is not collapsible JSON or not actually ambiguous.
+    """
+    raw = await _catalog_post(body)
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    collapsed = _collapse_exact_catalog_match(data, kind, query, prefix)
+    return raw if collapsed is data else json.dumps(collapsed, indent=2)
+
+
 async def _lookup_encounter_data(query: str, max_matches: int = 10) -> dict:
     try:
         data = json.loads(await _catalog_post({"action": "lookup_encounter", "query": query, "max_matches": max_matches}))
@@ -903,7 +985,9 @@ async def lookup_card(query: str, max_matches: int = 10) -> str:
         max_matches: Maximum ambiguous matches to return.
     """
     try:
-        return await _catalog_post({"action": "lookup_card", "query": query, "max_matches": max_matches})
+        return await _catalog_lookup_passthrough(
+            {"action": "lookup_card", "query": query, "max_matches": max_matches}, "card", query, "CARD"
+        )
     except Exception as e:
         return _handle_error(e)
 
@@ -951,7 +1035,9 @@ async def lookup_relic(query: str, max_matches: int = 10) -> str:
         max_matches: Maximum ambiguous matches to return.
     """
     try:
-        return await _catalog_post({"action": "lookup_relic", "query": query, "max_matches": max_matches})
+        return await _catalog_lookup_passthrough(
+            {"action": "lookup_relic", "query": query, "max_matches": max_matches}, "relic", query, "RELIC"
+        )
     except Exception as e:
         return _handle_error(e)
 
@@ -991,7 +1077,9 @@ async def lookup_encounter(query: str, max_matches: int = 10) -> str:
     a scenario needs a specific encounter id.
     """
     try:
-        return json.dumps(await _lookup_encounter_data(query, max_matches), indent=2)
+        data = await _lookup_encounter_data(query, max_matches)
+        data = _collapse_exact_catalog_match(data, "encounter", query, "ENCOUNTER")
+        return json.dumps(data, indent=2)
     except Exception as e:
         return _handle_error(e)
 
@@ -1020,7 +1108,9 @@ async def lookup_character(query: str) -> str:
         query: Character id, display name, or partial name from the issue.
     """
     try:
-        return await _catalog_post({"action": "lookup_character", "query": query})
+        return await _catalog_lookup_passthrough(
+            {"action": "lookup_character", "query": query}, "character", query, None
+        )
     except Exception as e:
         return _handle_error(e)
 

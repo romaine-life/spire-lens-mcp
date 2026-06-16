@@ -704,6 +704,17 @@ public static partial class McpMod
         string query,
         Func<object, Dictionary<string, object?>> buildInfo)
     {
+        string trimmedQuery = (query ?? "").Trim();
+
+        // The catalog key (Id.Entry) is bare, but callers sometimes pass it with a
+        // save-file kind prefix (RELIC./CARD./ENCOUNTER.). Accept either form when
+        // testing for an exact id. A leading token only counts as a prefix when it
+        // contains no spaces, so display names like "St. Clair" are left intact.
+        string bareQuery = trimmedQuery;
+        int dot = trimmedQuery.IndexOf('.');
+        if (dot > 0 && !trimmedQuery.Substring(0, dot).Contains(" "))
+            bareQuery = trimmedQuery.Substring(dot + 1);
+
         string normalizedQuery = NormalizeCatalogKey(query);
         var scored = new List<(int Score, string Name, Dictionary<string, object?> Info)>();
 
@@ -714,8 +725,16 @@ public static partial class McpMod
             string normalizedId = NormalizeCatalogKey(id);
             string normalizedName = NormalizeCatalogKey(name);
 
+            // Exact tiers compare the RAW id/name (case-insensitive only). The
+            // normalized key strips punctuation, so it collapses "Happy Flower" and
+            // the decoy "Happy Flower???" onto the same string -- fine for fuzzy
+            // discovery, useless for identifying a unique relic. Raw equality is
+            // what makes an exact lookup deterministic.
             int score = 0;
-            if (normalizedId == normalizedQuery) score = 100;
+            if (string.Equals(id, trimmedQuery, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(id, bareQuery, StringComparison.OrdinalIgnoreCase)) score = 110;       // exact id (canonical key)
+            else if (string.Equals(name, trimmedQuery, StringComparison.OrdinalIgnoreCase)) score = 105; // exact display name
+            else if (normalizedId == normalizedQuery) score = 100;
             else if (normalizedName == normalizedQuery) score = 95;
             else if (normalizedId.Contains(normalizedQuery)) score = 70;
             else if (normalizedName.Contains(normalizedQuery)) score = 65;
@@ -725,6 +744,21 @@ public static partial class McpMod
                 var info = buildInfo(obj);
                 scored.Add((score, name, info));
             }
+        }
+
+        // A lookup is keyed retrieval, not a fuzzy search. When the caller gave an
+        // exact id or display name (raw match), return that single record and drop
+        // the substring co-matches that would otherwise make a unique key look
+        // "ambiguous" -- e.g. id HAPPY_FLOWER is a substring of FAKE_HAPPY_FLOWER,
+        // so the old count-based status reported both and aborted the run. Only
+        // when there is no unique exact hit do we fall back to the ranked fuzzy
+        // list, which may still be legitimately ambiguous.
+        int topScore = scored.Count == 0 ? 0 : scored.Max(x => x.Score);
+        if (topScore >= 105)
+        {
+            var exact = scored.Where(x => x.Score == topScore).ToList();
+            if (exact.Count == 1)
+                return new List<Dictionary<string, object?>> { exact[0].Info };
         }
 
         return scored
