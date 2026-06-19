@@ -853,7 +853,8 @@ public static partial class McpMod
             var cur = visitedCoords[visitedCoords.Count - 1];
             state["current_position"] = new Dictionary<string, object?>
             {
-                ["col"] = cur.col, ["row"] = cur.row,
+                ["col"] = cur.col,
+                ["row"] = cur.row,
                 ["type"] = map.GetPoint(cur)?.PointType.ToString()
             };
         }
@@ -864,7 +865,8 @@ public static partial class McpMod
         {
             visited.Add(new Dictionary<string, object?>
             {
-                ["col"] = coord.col, ["row"] = coord.row,
+                ["col"] = coord.col,
+                ["row"] = coord.row,
                 ["type"] = map.GetPoint(coord)?.PointType.ToString()
             });
         }
@@ -897,7 +899,8 @@ public static partial class McpMod
                     .OrderBy(c => c.coord.col)
                     .Select(c => new Dictionary<string, object?>
                     {
-                        ["col"] = c.coord.col, ["row"] = c.coord.row,
+                        ["col"] = c.coord.col,
+                        ["row"] = c.coord.row,
                         ["type"] = c.PointType.ToString()
                     }).ToList();
                 if (children.Count > 0)
