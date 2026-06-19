@@ -174,7 +174,14 @@ public static partial class McpMod
                 // caller to discover a real encounter via list_encounters /
                 // lookup_encounter, OR to omit next_normal_encounter entirely
                 // when the scenario does not depend on encounter type.
-                ["next_normal_encounter_guidance"] = "Optional. Use list_encounters(room_type=\"Monster\") to discover real encounter ids; pass one of the returned ids verbatim. Omit (null) when the relic/card stat being tested does not depend on which encounter is fought (e.g. start-of-combat triggers that fire regardless of opponent)."
+                ["next_normal_encounter_guidance"] = "Optional and Monster-only: it selects WHICH normal (Monster) encounter is fought and can never create an Elite or Boss room. Use list_encounters(room_type=\"Monster\") to discover real ids and pass one verbatim, or omit (null) when the behavior does not depend on which opponent is fought (e.g. start-of-combat triggers that fire regardless of opponent). To stage a room-type-gated trigger (e.g. a relic that fires only at the start of Elite combats), do NOT put an _ELITE/_BOSS id here — set scenario_setup.required_room_type to that RoomType and the verification harness enters that room deterministically.",
+                // required_room_type is consumed by the verification harness
+                // (prepare-scenario), not by materialize_scenario_save: the
+                // harness calls enter_debug_room(room_type) after load and
+                // fails the scenario unless the live state_type matches. This
+                // is the only correct way to stage an Elite/Boss-gated effect;
+                // next_normal_encounter cannot (spirelens#146).
+                ["required_room_type_guidance"] = "Optional. RoomType to stage for a room-type-gated trigger: \"Monster\", \"Elite\", or \"Boss\". Set it when the relic/card under test only fires in that room type; the harness enters that room after loading the save and fails unless the live combat is actually that type. Leave null for combat-agnostic behavior. Not a catalog id; needs no scenario_id_validation entry."
             },
             ["tools"] = BuildValidationToolManifest()
         };
