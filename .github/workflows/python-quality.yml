@@ -1,0 +1,43 @@
+name: python-quality
+
+# Hermetic unit tests for the Python MCP server bridge under mcp/ — the deployed
+# Streamable-HTTP + auth.romaine.life JWT bridge (server.py). The suite (RS256
+# auth validation, STS2-launcher resolution, catalog disambiguation) uses
+# monkeypatch/tmp_path and needs no game assemblies and no network, so it runs on
+# a stock GitHub-hosted runner. This is the load-bearing automated gate for the
+# repo; the C# mod build is game-dependent and tracked separately (issue #18 /
+# dotnet-format.yml).
+
+on:
+  pull_request:
+    paths:
+      - "mcp/**"
+      - ".github/workflows/python-quality.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mcp/**"
+      - ".github/workflows/python-quality.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          # The project's lockfile lives under mcp/, not the repo root.
+          cache-dependency-glob: "mcp/uv.lock"
+      # --frozen installs exactly what mcp/uv.lock pins (no implicit lock update),
+      # so CI runs the same dependency set verified locally. uv provisions a
+      # compatible Python from the project's requires-python (>=3.11).
+      - name: Run tests
+        run: uv run --frozen --group dev pytest -q

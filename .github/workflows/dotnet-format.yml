@@ -1,0 +1,49 @@
+name: dotnet-format
+
+# Game-independent C# tripwire.
+#
+# The mod (SpireLensMcpBridge.csproj) links the proprietary STS2 game assemblies
+# (sts2.dll / GodotSharp.dll / 0Harmony.dll, via HintPath into a local Steam
+# install) and has no NuGet PackageReferences — so on a stock runner a full
+# `dotnet build` is impossible and `dotnet restore` is a no-op. The real
+# compile/load gate needs the game-bearing self-hosted runner the sibling
+# SpireLens repo uses; that is deliberately NOT half-built here and is tracked in
+# issue #18.
+#
+# What this job CAN do without the game: whitespace-format verification in
+# --folder mode, which operates per-file on the syntax (no MSBuild project load,
+# so no assembly-reference resolution). It catches whitespace / line-ending /
+# trailing-space drift on the .cs sources — the only automated C# signal
+# available here until #18 lands.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.cs"
+      - "**/*.csproj"
+      - "**/*.sln"
+      - ".github/workflows/dotnet-format.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.cs"
+      - "**/*.csproj"
+      - "**/*.sln"
+      - ".github/workflows/dotnet-format.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  whitespace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+      # --folder treats the path as a plain folder of files (no project/solution
+      # load), which is what keeps this independent of the missing game DLLs.
+      # --verify-no-changes fails the job if any .cs file is not whitespace-clean.
+      - name: Verify C# whitespace
+        run: dotnet format whitespace . --folder --verify-no-changes --verbosity diagnostic
