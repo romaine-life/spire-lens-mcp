@@ -24,6 +24,7 @@ public static partial class McpMod
     private const string ConfigFileName = "SpireLensMcpBridge.conf";
 
     private static HttpListener? _listener;
+    private static int _port = DefaultPort;
     private static Thread? _serverThread;
     private static readonly ConcurrentQueue<Action> _mainThreadQueue = new();
     internal static readonly JsonSerializerOptions _jsonOptions = new()
@@ -84,6 +85,8 @@ public static partial class McpMod
             tree.Connect(SceneTree.SignalName.ProcessFrame, Callable.From(ProcessMainThreadQueue));
 
             int port = LoadPort();
+            _port = port;
+            InitializeStateSignals(tree);
 
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://localhost:{port}/");
@@ -187,7 +190,17 @@ public static partial class McpMod
 
             if (path == "/")
             {
-                SendJson(response, new { message = $"Hello from SpireLensMcpBridge v{Version}", status = "ok" });
+                SendJson(response, new Dictionary<string, object?>
+                {
+                    ["message"] = $"Hello from SpireLensMcpBridge v{Version}",
+                    ["status"] = "ok",
+                    // "ok" means the listener is up; "ready" means game startup
+                    // (logo, main menu, startup error checks) has finished.
+                    ["ready"] = StartupComplete,
+                    ["pid"] = System.Environment.ProcessId,
+                    ["state_version"] = StateVersion,
+                    ["ready_file"] = ReadyFilePath,
+                });
             }
             else if (path == "/api/v1/singleplayer")
             {
@@ -347,14 +360,17 @@ public static partial class McpMod
 
         try
         {
-            var stateTask = RunOnMainThread(() => BuildGameState());
+            var stateTask = RunOnMainThread(BuildVersionedState);
             var state = stateTask.GetAwaiter().GetResult();
 
             if (format == "markdown")
             {
                 try
                 {
-                    SendText(response, FormatAsMarkdown(state), "text/markdown");
+                    // Markdown readers need the version too, to pass to wait_for_change.
+                    string footer = $"\n\n---\nstate_version: {state["state_version"]}, settled: {state["settled"]}"
+                                    + (state.TryGetValue("unsettled_reason", out var why) && why != null ? $" ({why})" : "");
+                    SendText(response, FormatAsMarkdown(state) + footer, "text/markdown");
                 }
                 catch (Exception ex)
                 {
@@ -384,6 +400,31 @@ public static partial class McpMod
         }
     }
 
+    /// <summary>
+    /// An action result may carry a game task under this key (for example a
+    /// save it started). The HTTP thread waits for it before responding, so the
+    /// client learns the outcome without asking again; the main thread never blocks.
+    /// </summary>
+    internal const string AwaitTaskKey = "__await_task";
+    private static readonly TimeSpan AwaitTaskTimeout = TimeSpan.FromSeconds(30);
+
+    private static void AwaitResultTask(Dictionary<string, object?> result)
+    {
+        if (!result.Remove(AwaitTaskKey, out var value) || value is not Task task) return;
+        try
+        {
+            if (!task.Wait(AwaitTaskTimeout))
+                result["save_status"] = "pending (not finished after 30 s)";
+            else
+                result["save_status"] = "saved";
+        }
+        catch (Exception ex)
+        {
+            result["status"] = "error";
+            result["save_status"] = $"error: {ex.GetBaseException().Message}";
+        }
+    }
+
     private static void HandlePostAction(HttpListenerRequest request, HttpListenerResponse response)
     {
         string body;
@@ -409,10 +450,18 @@ public static partial class McpMod
 
         string action = actionElem.GetString() ?? "";
 
+        // Blocks on state-change notifications, so it must not hold the main thread.
+        if (action == "wait_for_change")
+        {
+            HandleWaitForChange(parsed, response);
+            return;
+        }
+
         try
         {
             var resultTask = RunOnMainThread(() => ExecuteAction(action, parsed));
             var result = resultTask.GetAwaiter().GetResult();
+            AwaitResultTask(result);
             SendJson(response, result);
         }
         catch (Exception ex)

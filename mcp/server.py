@@ -261,6 +261,113 @@ def _stop_sts2_processes(processes: list[dict]) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Event-driven host waits (Windows). Nothing here sleeps in a loop: startup
+# blocks on a directory change notification for the bridge's ready file, and
+# shutdown blocks on the game's process handles.
+# ---------------------------------------------------------------------------
+
+_FILE_NOTIFY_CHANGE_FILE_NAME = 0x001
+_FILE_NOTIFY_CHANGE_LAST_WRITE = 0x010
+_WAIT_OBJECT_0 = 0x000
+_WAIT_TIMEOUT = 0x102
+_SYNCHRONIZE = 0x00100000
+_INVALID_HANDLE_VALUE = -1
+
+
+def _bridge_ready_file() -> Path | None:
+    """Where the bridge writes bridge-ready.json once game startup completes."""
+    configured = os.environ.get("SPIRELENS_BRIDGE_READY_FILE", "").strip()
+    if configured:
+        return Path(configured)
+    appdata = os.environ.get("APPDATA", "").strip()
+    if not appdata:
+        return None
+    return Path(appdata) / "SlayTheSpire2" / "SpireLensMcpBridge" / "bridge-ready.json"
+
+
+def _read_valid_ready_file(path: Path) -> dict | None:
+    """The ready file's contents when it names a live STS2 process, else None."""
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    pid = str(doc.get("pid") or "")
+    if not any(p.get("pid") == pid for p in _list_sts2_processes()):
+        return None  # left behind by a process that is gone
+    return doc
+
+
+def _kernel32():
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.FindFirstChangeNotificationW.restype = wintypes.HANDLE
+    k32.FindFirstChangeNotificationW.argtypes = [wintypes.LPCWSTR, wintypes.BOOL, wintypes.DWORD]
+    k32.FindNextChangeNotification.argtypes = [wintypes.HANDLE]
+    k32.FindCloseChangeNotification.argtypes = [wintypes.HANDLE]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForMultipleObjects.restype = wintypes.DWORD
+    k32.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return k32
+
+
+def _wait_for_ready_file_blocking(path: Path, timeout_seconds: float) -> dict | None:
+    """Blocks until `path` names a live STS2 process, or the timeout passes."""
+    if platform.system().lower() != "windows":
+        return _read_valid_ready_file(path)
+    k32 = _kernel32()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = k32.FindFirstChangeNotificationW(
+        str(path.parent), False, _FILE_NOTIFY_CHANGE_FILE_NAME | _FILE_NOTIFY_CHANGE_LAST_WRITE)
+    if not handle or handle == _INVALID_HANDLE_VALUE:
+        raise OSError(f"could not watch {path.parent}")
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while True:
+            # Checked after the watch is armed, so a write in between still wakes us.
+            doc = _read_valid_ready_file(path)
+            if doc is not None:
+                return doc
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return None
+            if k32.WaitForSingleObject(handle, remaining_ms) != _WAIT_OBJECT_0:
+                return None
+            k32.FindNextChangeNotification(handle)
+    finally:
+        k32.FindCloseChangeNotification(handle)
+
+
+def _wait_for_pids_exit_blocking(pids: list[int], timeout_seconds: float) -> bool:
+    """Blocks on the processes' handles until all have exited or the timeout passes."""
+    if platform.system().lower() != "windows" or not pids:
+        return not pids
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = _kernel32()
+    handles = []
+    for pid in pids[:64]:  # WaitForMultipleObjects' limit
+        h = k32.OpenProcess(_SYNCHRONIZE, False, pid)
+        if h:  # a pid that can't be opened has already exited
+            handles.append(h)
+    try:
+        if not handles:
+            return True
+        arr = (wintypes.HANDLE * len(handles))(*handles)
+        result = k32.WaitForMultipleObjects(len(handles), arr, True, int(max(0, timeout_seconds) * 1000))
+        return result != _WAIT_TIMEOUT and result < _WAIT_OBJECT_0 + len(handles)
+    finally:
+        for h in handles:
+            k32.CloseHandle(h)
+
+
 async def _probe_bridge(timeout: float = 5.0) -> dict:
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env) as client:
@@ -308,7 +415,12 @@ def _classify_host_status(bridge: dict) -> dict:
     game_dir = _configured_game_dir()
     launcher = _resolve_sts2_launcher()
 
-    if bridge.get("reachable"):
+    body = bridge.get("body") if isinstance(bridge.get("body"), dict) else {}
+    if bridge.get("reachable") and body.get("ready") is False:
+        status = "bridge_starting"
+        diagnosis = "The in-game bridge is listening, but game startup (logo, main menu) has not finished."
+        next_actions = ["Call start_sts2(wait_for_bridge=true); it returns when startup completes."]
+    elif bridge.get("reachable"):
         status = "ready"
         diagnosis = "The in-game SpireLens MCP bridge is reachable."
         next_actions: list[str] = []
@@ -355,7 +467,9 @@ async def _get(params: dict | None = None) -> str:
 
 
 async def _post(body: dict) -> str:
-    async with httpx.AsyncClient(timeout=10, trust_env=_trust_env) as client:
+    # Some actions answer only once the game finishes the work they started
+    # (a save write), so allow longer than a plain read.
+    async with httpx.AsyncClient(timeout=40, trust_env=_trust_env) as client:
         r = await client.post(_sp_url(), json=body)
         r.raise_for_status()
         return r.text
@@ -1595,7 +1709,7 @@ async def start_sts2(wait_for_bridge: bool = True, timeout_seconds: int = 90) ->
     STS2_GAME_DIR / common Steam paths.
 
     Args:
-        wait_for_bridge: Poll bridge_health until the in-game bridge is ready.
+        wait_for_bridge: Wait until game startup completes (the bridge writes its ready file; this blocks on a directory change notification).
         timeout_seconds: Maximum wait time when wait_for_bridge is true.
     """
     try:
@@ -1619,18 +1733,22 @@ async def start_sts2(wait_for_bridge: bool = True, timeout_seconds: int = 90) ->
                 return _json(before)
 
         timeout = max(0, min(int(timeout_seconds), 300))
-        deadline = time.monotonic() + timeout
-        last = before
-        while time.monotonic() < deadline:
-            await asyncio.sleep(3)
-            last = await _host_status_payload()
-            if last["status"] == "ready":
-                last["action"] = "started_and_ready" if before.get("action") == "started" else "already_running_ready"
-                last["waited_seconds"] = max(0, timeout - int(deadline - time.monotonic()))
-                return _json(last)
-
-        last["action"] = "started_bridge_not_ready" if before.get("action") == "started" else "already_running_bridge_not_ready"
-        last["waited_seconds"] = timeout
+        ready_file = _bridge_ready_file()
+        if ready_file is None:
+            before["action"] = "cannot_wait"
+            before["diagnosis"] = "APPDATA is unset, so the bridge's ready file cannot be located; set SPIRELENS_BRIDGE_READY_FILE."
+            return _json(before)
+        # The bridge writes the file once game startup completes; wait on a
+        # directory change notification for it rather than re-probing.
+        started = time.monotonic()
+        doc = await asyncio.to_thread(_wait_for_ready_file_blocking, ready_file, timeout)
+        last = await _host_status_payload()
+        last["waited_seconds"] = int(time.monotonic() - started)
+        last["ready_file"] = str(ready_file)
+        if doc is not None and last["status"] == "ready":
+            last["action"] = "started_and_ready" if before.get("action") == "started" else "already_running_ready"
+        else:
+            last["action"] = "started_bridge_not_ready" if before.get("action") == "started" else "already_running_bridge_not_ready"
         return _json(last)
     except Exception as e:
         return _handle_error(e)
@@ -1645,7 +1763,7 @@ async def stop_sts2(wait_for_exit: bool = True, timeout_seconds: int = 45) -> st
     `start_sts2(wait_for_bridge=true)` path or to clean up after live testing.
 
     Args:
-        wait_for_exit: Poll host status until no STS2 process remains.
+        wait_for_exit: Wait on the STS2 process handles until they exit.
         timeout_seconds: Maximum wait time when wait_for_exit is true.
     """
     try:
@@ -1660,20 +1778,14 @@ async def stop_sts2(wait_for_exit: bool = True, timeout_seconds: int = 45) -> st
             return _json(before)
 
         timeout = max(0, min(int(timeout_seconds), 300))
-        deadline = time.monotonic() + timeout
-        last = before
-        while time.monotonic() < deadline:
-            await asyncio.sleep(1)
-            last = await _host_status_payload()
-            if not last["game"]["running"]:
-                last["action"] = "stopped"
-                last["stop_result"] = before["stop_result"]
-                last["waited_seconds"] = max(0, timeout - int(deadline - time.monotonic()))
-                return _json(last)
-
-        last["action"] = "stop_timeout"
+        pids = [int(p["pid"]) for p in before["game"]["processes"] if str(p.get("pid") or "").isdigit()]
+        started = time.monotonic()
+        # Block on the processes' handles until they exit.
+        exited = await asyncio.to_thread(_wait_for_pids_exit_blocking, pids, timeout)
+        last = await _host_status_payload()
+        last["action"] = "stopped" if exited and not last["game"]["running"] else "stop_timeout"
         last["stop_result"] = before["stop_result"]
-        last["waited_seconds"] = timeout
+        last["waited_seconds"] = int(time.monotonic() - started)
         return _json(last)
     except Exception as e:
         return _handle_error(e)
@@ -1687,7 +1799,7 @@ async def restart_sts2(wait_for_bridge: bool = True, timeout_seconds: int = 90) 
     structured status payload with both stop and start details.
 
     Args:
-        wait_for_bridge: Poll bridge_health until the in-game bridge is ready.
+        wait_for_bridge: Wait until game startup completes (the bridge writes its ready file; this blocks on a directory change notification).
         timeout_seconds: Maximum wait time for the stop/start sequence.
     """
     try:
@@ -2027,16 +2139,68 @@ async def configure_live_combat(
         return _handle_error(e)
 
 
-async def _wait_for_state(predicate, timeout_seconds: int) -> dict:
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
+async def _wait_for_change(since_version: int, timeout_seconds: float, require_settled: bool = True) -> dict:
+    """One bridge wait_for_change call: returns once the game state version
+    passes `since_version` and (by default) the game has settled, or at the
+    timeout. The bridge parks the request on its state-change signal."""
+    timeout_ms = int(max(0, timeout_seconds) * 1000)
+    async with httpx.AsyncClient(timeout=timeout_seconds + 15, trust_env=_trust_env) as client:
+        r = await client.post(_sp_url(), json={
+            "action": "wait_for_change",
+            "since_version": since_version,
+            "timeout_ms": timeout_ms,
+            "require_settled": require_settled,
+        })
+        r.raise_for_status()
+        return r.json()
+
+
+async def _wait_for_state(predicate, timeout_seconds: float, since_version: int = -1) -> dict:
+    """Waits until a settled game state satisfies `predicate`. Each iteration
+    blocks in the bridge until the state actually changes; nothing sleeps."""
+    deadline = time.monotonic() + timeout_seconds
+    since = since_version
     last_state: dict = {}
-    while asyncio.get_running_loop().time() < deadline:
-        state_text = await _get({"format": "json"})
-        last_state = json.loads(state_text)
-        if predicate(last_state):
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        reply = await _wait_for_change(since, remaining)
+        last_state = reply.get("state") or {}
+        if reply.get("status") == "ok" and predicate(last_state):
             return last_state
-        await asyncio.sleep(0.5)
+        if reply.get("status") == "timeout":
+            break
+        since = int(last_state.get("state_version", since))
     raise TimeoutError(f"Timed out waiting for requested game state. Last state: {last_state}")
+
+
+@mcp.tool()
+async def wait_for_game_state_change(since_version: int = -1, timeout_seconds: int = 30, format: str = "json") -> str:
+    """Wait for the game to change and settle, then return the new state.
+
+    Use this after an action instead of calling get_game_state repeatedly.
+    Every get_game_state response carries `state_version` (in markdown, on the
+    last line). Pass it here: the call returns once something has changed since
+    that version AND the game has settled (no card/enemy action animating, no
+    turn hand-off, no screen transition). With the default since_version=-1 it
+    returns as soon as the game is settled.
+
+    Args:
+        since_version: The state_version you last saw.
+        timeout_seconds: Maximum wait (1-300). On timeout the latest state is
+            returned with "status": "timeout" and its "unsettled_reason".
+        format: "json" for the bridge's reply, "markdown" for the settled state
+            rendered like get_game_state.
+    """
+    try:
+        timeout = max(1, min(int(timeout_seconds), 300))
+        reply = await _wait_for_change(int(since_version), timeout)
+        if format == "markdown" and reply.get("status") == "ok":
+            return await _get({"format": "markdown"})
+        return _json(reply)
+    except Exception as e:
+        return _handle_error(e)
 
 
 # ---------------------------------------------------------------------------
