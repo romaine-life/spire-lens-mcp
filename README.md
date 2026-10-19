@@ -42,7 +42,7 @@ curl -s http://localhost:15526/
 Expected:
 
 ```json
-{"message": "Hello from SpireLens MCP v0.3.4", "status": "ok"}
+{"message": "Hello from SpireLensMcpBridge v0.3.4", "status": "ok", "ready": true, "pid": 12345, "state_version": 812, "ready_file": "..."}
 ```
 
 `Connection refused` means the mod isn't loaded — check that mods are enabled in the game's settings.
@@ -50,9 +50,26 @@ Expected:
 When driving STS2 through the MCP server, use `bridge_health` or
 `get_host_status` first. These tools run on the host-side MCP server and return
 structured JSON for the common startup states: host MCP reachable, STS2 not
-running, STS2 running without the in-game bridge, or bridge ready. On hosts with
-a configured launcher, call `start_sts2` to launch the game and optionally poll
-until the bridge becomes reachable.
+running, STS2 running without the in-game bridge, bridge still starting, or
+bridge ready. On hosts with a configured launcher, call `start_sts2` to launch
+the game and wait for it.
+
+Nothing in the bridge or the MCP server waits by polling:
+
+- **Startup.** `"status": "ok"` means the listener is up. `"ready": true` means
+  `NGame.GameStartupComplete` has finished (logo, main menu, startup error
+  checks), so loading a run can no longer cancel startup. At that point the
+  bridge writes `bridge-ready.json` (pid, port, version) under the game's user
+  data directory (`%APPDATA%\SlayTheSpire2\SpireLensMcpBridge\`), and
+  `start_sts2` blocks on a directory change notification for it.
+- **Shutdown.** `stop_sts2` blocks on the game's process handles.
+- **Game state.** Every state response carries `state_version` and `settled`.
+  `POST {"action": "wait_for_change", "since_version": N, "timeout_ms": M}`
+  parks the request until the version passes N and the game has settled (no
+  game action running or queued, no turn hand-off, no screen transition), then
+  returns the state. The version is bumped by run, room, combat, action-queue,
+  overlay, map and hand events, plus the scene tree's node signals. The MCP
+  tool is `wait_for_game_state_change`.
 
 ## MCP server
 

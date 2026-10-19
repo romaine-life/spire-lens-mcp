@@ -537,7 +537,7 @@ public static partial class McpMod
         if (NGame.Instance == null)
             return Error("NGame.Instance is not available yet.");
         if (_currentRunLoadInProgress)
-            return Error("A current run save load is already in progress. Poll get_game_state until state_type is not loading.");
+            return Error("A current run save load is already in progress. Call wait_for_change until state_type is not loading.");
         if (RunManager.Instance.IsInProgress)
             return Error("A run is already in progress. Return to main menu before loading a current run save.");
 
@@ -552,6 +552,7 @@ public static partial class McpMod
             _currentRunLoadError = null;
             _currentRunLoadStartedAtUtc = DateTime.UtcNow;
             _currentRunLoadInProgress = true;
+            BumpState();
             TaskHelper.RunSafely(TrackCurrentRunLoadAsync(runState, save));
         }
         catch (Exception ex)
@@ -570,7 +571,8 @@ public static partial class McpMod
             ["schema_version"] = loaded.SaveData.SchemaVersion,
             ["ascension"] = loaded.SaveData.Ascension,
             ["current_act_index"] = loaded.SaveData.CurrentActIndex,
-            ["next_step"] = "Poll get_game_state until state_type is not loading, menu, or unknown."
+            ["state_version"] = StateVersion,
+            ["next_step"] = "Call wait_for_change with this response's state_version until state_type is not loading, menu, or unknown."
         };
     }
 
@@ -587,6 +589,7 @@ public static partial class McpMod
         finally
         {
             _currentRunLoadInProgress = false;
+            BumpState();
         }
     }
 
@@ -774,11 +777,13 @@ public static partial class McpMod
         }
 
         var saveStatus = "not_requested";
+        Task? saveTask = null;
         if (persist)
         {
             try
             {
-                TaskHelper.RunSafely(SaveManager.Instance.SaveRun(null));
+                saveTask = SaveManager.Instance.SaveRun(null);
+                TaskHelper.RunSafely(saveTask);
                 saveStatus = "requested";
             }
             catch (Exception ex)
@@ -795,8 +800,10 @@ public static partial class McpMod
             ["added"] = added,
             ["updated_combat_piles"] = updatedPiles,
             ["save_status"] = saveStatus,
+            // The HTTP thread waits for the write before responding (AwaitTaskKey).
+            [AwaitTaskKey] = saveTask,
             ["next_step"] = persist
-                ? "Poll validate_current_run_save until the saved deck reflects this live deck."
+                ? "The save has been written when this returns; call validate_current_run_save."
                 : "Call this again with persist=true to write through the game's SaveManager."
         };
     }

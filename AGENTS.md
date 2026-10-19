@@ -2,9 +2,10 @@
 
 ## MCP Tool Calling Tips
 
-### State Polling
-- After `combat_end_turn`, the state may show `is_play_phase: false` or `turn: enemy`. Call `get_game_state` again to advance to the next player turn.
-- Sometimes you need to call `get_game_state` twice — once to see enemy turn results, once to see your new hand.
+### Waiting For The Game
+- Every `get_game_state` response carries `state_version` and `settled` (in markdown, on the last line).
+- After an action, call `wait_for_game_state_change(since_version=<the version you saw>)` instead of calling `get_game_state` again. It returns once the game has changed and settled: after `combat_end_turn`, that is your next turn (or the combat's end), not the enemy turn in progress.
+- Do not loop on `get_game_state` to wait for something. If `wait_for_game_state_change` returns `"status": "timeout"`, read its `unsettled_reason`.
 - Use `format: "json"` during combat for structured data; `format: "markdown"` for map/event overview.
 
 ### Card Index Shifting
